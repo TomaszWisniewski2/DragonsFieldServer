@@ -1,3 +1,5 @@
+// index.ts
+
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
@@ -57,12 +59,19 @@ export interface Session {
 
 // ==== Setup serwera ====
 const app = express();
+// Użycie CORS dla połączeń HTTP/Express
 app.use(cors());
+
+// Dodanie prostego endpointu na sprawdzenie statusu serwera
+app.get("/", (req, res) => {
+    res.send("DragonsField Server is running! 🐉");
+});
 
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: "*",
+        // Użycie "*" dla testów, w produkcji zmień na domenę Netlify!
+        origin: "*", 
         methods: ["GET", "POST"],
     },
 });
@@ -86,157 +95,157 @@ function removeFromZone<T extends { id: string }>(zoneArr: T[], id: string): T |
 
 // ==== Socket.IO ====
 io.on("connection", (socket) => {
-  console.log("Użytkownik połączony:", socket.id);
+    console.log("Użytkownik połączony:", socket.id);
 
-  // --- Akcje zarządzania sesją ---
-  socket.on("createSession", ({ code, playerName, deck, sessionType = "standard" }: { code: string; playerName: string; deck: CardType[]; sessionType?: SessionType }) => {
-    console.log(`[CREATE] Otrzymano żądanie utworzenia sesji od gracza ${playerName}`);
-    console.log(`[CREATE] Długość talii z klienta: ${deck.length}`);
+    // --- Akcje zarządzania sesją ---
+    socket.on("createSession", ({ code, playerName, deck, sessionType = "standard" }: { code: string; playerName: string; deck: CardType[]; sessionType?: SessionType }) => {
+        console.log(`[CREATE] Otrzymano żądanie utworzenia sesji od gracza ${playerName}`);
+        console.log(`[CREATE] Długość talii z klienta: ${deck.length}`);
 
-    if (sessions[code]) {
-      socket.emit("error", "Sesja o podanym kodzie już istnieje!");
-      return;
-    }
+        if (sessions[code]) {
+            socket.emit("error", "Sesja o podanym kodzie już istnieje!");
+            return;
+        }
 
-    if (!deck || deck.length === 0) {
-      socket.emit("error", "Talia jest pusta! Zbuduj talię w Deck Managerze.");
-      return;
-    }
+        if (!deck || deck.length === 0) {
+            socket.emit("error", "Talia jest pusta! Zbuduj talię w Deck Managerze.");
+            return;
+        }
 
-    socket.join(code);
+        socket.join(code);
+        
+        let life = 20;
+        const initialDeck = [...deck];
+        let commander: CardType | undefined;
+        let commanderZone: CardType[] = [];
+        
+        if (sessionType === "commander") {
+            life = 40;
+            // Zakładamy, że pierwsza karta w talii z klienta jest dowódcą
+            const commanderCard = initialDeck.shift(); 
+            if (commanderCard) {
+                commander = commanderCard;
+                commanderZone = [commanderCard];
+                console.log(`[CREATE] Tryb Commander. Dowódca wybrany: ${commanderCard.name}`);
+            } else {
+                socket.emit("error", "W trybie Commander talia musi zawierać co najmniej jedną kartę dowódcy.");
+                return;
+            }
+        }
+
+        const player: Player = {
+            id: socket.id,
+            name: playerName,
+            life,
+            initialDeck,
+            library: shuffle([...initialDeck]),
+            hand: [],
+            battlefield: [],
+            graveyard: [],
+            exile: [],
+            commanderZone,
+            commander,
+            manaPool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
+            counters: {
+                Poison: 0,
+                Energy: 0,
+                Experience: 0,
+                Rad: 0,
+                Tickets: 0,
+                'Commander 1': 0,
+                'Commander 2': 0,
+                'Commander 3': 0,
+            },
+        };
+
+        for (let i = 0; i < 7 && player.library.length > 0; i++) {
+            const card = player.library.shift();
+            if (card) player.hand.push(card);
+        }
+
+        console.log(`[CREATE] Długość talii gracza po inicjalizacji: ${player.library.length}`);
+        console.log(`[CREATE] Długość ręki gracza po inicjalizacji: ${player.hand.length}`);
+        
+        sessions[code] = {
+            code,
+            players: [player],
+            turn: 1,
+            activePlayer: socket.id,
+            sessionType,
+        };
+
+        io.to(code).emit("updateState", sessions[code]);
+        console.log(`Utworzono sesję ${code} przez gracza ${playerName} w trybie ${sessionType}`);
+    });
+
+    socket.on("joinSession", ({ code, playerName, deck, sessionType = "standard" }: { code: string; playerName: string; deck: CardType[]; sessionType?: SessionType }) => {
+        console.log(`[JOIN] Otrzymano żądanie dołączenia do sesji od gracza ${playerName}`);
+        console.log(`[JOIN] Długość talii z klienta: ${deck.length}`);
+
+        const session = sessions[code];
+        if (!session) {
+            socket.emit("error", "Sesja o podanym kodzie nie istnieje!");
+            return;
+        }
+        
+        let life = 20;
+        const initialDeck = [...deck];
+        let commander: CardType | undefined;
+        let commanderZone: CardType[] = [];
+
+        if (sessionType === "commander") {
+            life = 40;
+            const commanderCard = initialDeck.shift(); 
+            if (commanderCard) {
+                commander = commanderCard;
+                commanderZone = [commanderCard];
+                console.log(`[JOIN] Tryb Commander. Dowódca wybrany: ${commanderCard.name}`);
+            } else {
+                socket.emit("error", "W trybie Commander talia musi zawierać co najmniej jedną kartę dowódcy.");
+                return;
+            }
+        }
+        
+        const player: Player = {
+            id: socket.id,
+            name: playerName,
+            life,
+            initialDeck,
+            library: shuffle([...initialDeck]),
+            hand: [],
+            battlefield: [],
+            graveyard: [],
+            exile: [],
+            commanderZone,
+            commander,
+            manaPool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
+            counters: {
+                Poison: 0,
+                Energy: 0,
+                Experience: 0,
+                Rad: 0,
+                Tickets: 0,
+                'Commander 1': 0,
+                'Commander 2': 0,
+                'Commander 3': 0,
+            },
+        };
+
+        for (let i = 0; i < 7 && player.library.length > 0; i++) {
+            const card = player.library.shift();
+            if (card) player.hand.push(card);
+        }
+
+        console.log(`[JOIN] Długość talii gracza po inicjalizacji: ${player.library.length}`);
+        console.log(`[JOIN] Długość ręki gracza po inicjalizacji: ${player.hand.length}`);
+
+        session.players.push(player);
+        socket.join(code);
+        io.to(code).emit("updateState", session);
+        console.log(`Gracz ${playerName} dołączył do sesji ${code}`);
+    });
     
-    let life = 20;
-    const initialDeck = [...deck];
-    let commander: CardType | undefined;
-    let commanderZone: CardType[] = [];
-    
-    if (sessionType === "commander") {
-      life = 40;
-      // Zakładamy, że pierwsza karta w talii z klienta jest dowódcą
-      const commanderCard = initialDeck.shift(); 
-      if (commanderCard) {
-        commander = commanderCard;
-        commanderZone = [commanderCard];
-        console.log(`[CREATE] Tryb Commander. Dowódca wybrany: ${commanderCard.name}`);
-      } else {
-        socket.emit("error", "W trybie Commander talia musi zawierać co najmniej jedną kartę dowódcy.");
-        return;
-      }
-    }
-
-    const player: Player = {
-        id: socket.id,
-        name: playerName,
-        life,
-        initialDeck,
-        library: shuffle([...initialDeck]),
-        hand: [],
-        battlefield: [],
-        graveyard: [],
-        exile: [],
-        commanderZone,
-        commander,
-        manaPool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
-        counters: {
-            Poison: 0,
-            Energy: 0,
-            Experience: 0,
-            Rad: 0,
-            Tickets: 0,
-            'Commander 1': 0,
-            'Commander 2': 0,
-            'Commander 3': 0,
-        },
-    };
-
-    for (let i = 0; i < 7 && player.library.length > 0; i++) {
-        const card = player.library.shift();
-        if (card) player.hand.push(card);
-    }
-
-    console.log(`[CREATE] Długość talii gracza po inicjalizacji: ${player.library.length}`);
-    console.log(`[CREATE] Długość ręki gracza po inicjalizacji: ${player.hand.length}`);
-    
-    sessions[code] = {
-      code,
-      players: [player],
-      turn: 1,
-      activePlayer: socket.id,
-      sessionType,
-    };
-
-    io.to(code).emit("updateState", sessions[code]);
-    console.log(`Utworzono sesję ${code} przez gracza ${playerName} w trybie ${sessionType}`);
-  });
-
-  socket.on("joinSession", ({ code, playerName, deck, sessionType = "standard" }: { code: string; playerName: string; deck: CardType[]; sessionType?: SessionType }) => {
-    console.log(`[JOIN] Otrzymano żądanie dołączenia do sesji od gracza ${playerName}`);
-    console.log(`[JOIN] Długość talii z klienta: ${deck.length}`);
-
-    const session = sessions[code];
-    if (!session) {
-      socket.emit("error", "Sesja o podanym kodzie nie istnieje!");
-      return;
-    }
-    
-    let life = 20;
-    const initialDeck = [...deck];
-    let commander: CardType | undefined;
-    let commanderZone: CardType[] = [];
-
-    if (sessionType === "commander") {
-      life = 40;
-      const commanderCard = initialDeck.shift(); 
-      if (commanderCard) {
-        commander = commanderCard;
-        commanderZone = [commanderCard];
-        console.log(`[JOIN] Tryb Commander. Dowódca wybrany: ${commanderCard.name}`);
-      } else {
-        socket.emit("error", "W trybie Commander talia musi zawierać co najmniej jedną kartę dowódcy.");
-        return;
-      }
-    }
-    
-    const player: Player = {
-      id: socket.id,
-      name: playerName,
-      life,
-      initialDeck,
-      library: shuffle([...initialDeck]),
-      hand: [],
-      battlefield: [],
-      graveyard: [],
-      exile: [],
-      commanderZone,
-      commander,
-      manaPool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
-        counters: {
-          Poison: 0,
-          Energy: 0,
-          Experience: 0,
-          Rad: 0,
-          Tickets: 0,
-          'Commander 1': 0,
-          'Commander 2': 0,
-          'Commander 3': 0,
-        },
-    };
-
-    for (let i = 0; i < 7 && player.library.length > 0; i++) {
-        const card = player.library.shift();
-        if (card) player.hand.push(card);
-    }
-
-    console.log(`[JOIN] Długość talii gracza po inicjalizacji: ${player.library.length}`);
-    console.log(`[JOIN] Długość ręki gracza po inicjalizacji: ${player.hand.length}`);
-
-    session.players.push(player);
-    socket.join(code);
-    io.to(code).emit("updateState", session);
-    console.log(`Gracz ${playerName} dołączył do sesji ${code}`);
-  });
-  
-  // --- Akcje gry ---
+    // --- Akcje gry ---
     socket.on("startGame", ({ code, sessionType = "standard" }: { code: string; sessionType?: SessionType }) => {
         const session = sessions[code];
         if (session) {
@@ -285,77 +294,81 @@ io.on("connection", (socket) => {
         }
     });
 
-      socket.on("resetPlayer", ({ code, playerId }: { code: string; playerId: string }) => {
-          const session = sessions[code];
-          if (!session) return;
+    socket.on("resetPlayer", ({ code, playerId }: { code: string; playerId: string }) => {
+        const session = sessions[code];
+        if (!session) return;
 
-          const player = session.players.find((p) => p.id === playerId);
-          if (!player) return;
+        const player = session.players.find((p) => p.id === playerId);
+        if (!player) return;
 
-          // Przenieś wszystkie karty z ręki, pola walki, cmentarza i stref dowódcy do biblioteki
-          const allCards = [
-              ...player.hand,
-              ...player.graveyard,
-              ...player.exile, // Dodano Exile
-              ...player.battlefield.map(cardOnField => cardOnField.card)
-          ];
-          
-          let deckToShuffle = [...player.initialDeck];
+        // Przenieś wszystkie karty z ręki, pola walki, cmentarza, Exile i strefy dowódcy do biblioteki do tasowania
+        const allCards = [
+            ...player.hand,
+            ...player.graveyard,
+            ...player.exile,
+            ...player.battlefield.map(cardOnField => cardOnField.card)
+        ];
+        
+        let deckToShuffle = [...player.initialDeck];
 
-          if (session.sessionType === "commander" && player.commander) {
-              player.commanderZone = [player.commander];
-              // Usuń kartę dowódcy z talii do tasowania
-              deckToShuffle = deckToShuffle.filter(c => c.id !== player.commander?.id);
-          } else {
-              player.commanderZone = [];
-          }
+        if (session.sessionType === "commander" && player.commander) {
+            // W trybie commander, dowódca wraca do commanderZone, a nie do biblioteki
+            player.commanderZone = [player.commander]; 
+            // Usuń kartę dowódcy z talii do tasowania
+            deckToShuffle = deckToShuffle.filter(c => c.id !== player.commander?.id);
+        } else {
+            player.commanderZone = [];
+        }
 
-          player.hand = [];
-          player.graveyard = [];
-          player.exile = [];
-          player.battlefield = [];
-          
-          player.library = shuffle([...deckToShuffle, ...allCards]);
+        player.hand = [];
+        player.graveyard = [];
+        player.exile = [];
+        player.battlefield = [];
+        
+        // Tasowanie wszystkich kart z powrotem do biblioteki
+        player.library = shuffle([...deckToShuffle, ...allCards]);
 
-          for (let i = 0; i < 7 && player.library.length > 0; i++) {
-              const card = player.library.shift();
-              if (card) player.hand.push(card);
-          }
-          
-          io.to(code).emit("updateState", session);
-          console.log(`Ręka gracza ${player.name} w sesji ${code} została zresetowana.`);
-      });
-  socket.on("draw", ({ code, playerId, count = 1 }: { code: string; playerId: string; count?: number }) => {
-    const session = sessions[code];
-    const player = session?.players.find((p) => p.id === playerId);
-    if (player) {
-      for (let i = 0; i < count; i++) {
-        const card = player.library.shift();
-        if (card) player.hand.push(card);
-      }
-      io.to(code).emit("updateState", session);
-    }
-  });
+        // Dobranie 7 kart
+        for (let i = 0; i < 7 && player.library.length > 0; i++) {
+            const card = player.library.shift();
+            if (card) player.hand.push(card);
+        }
+        
+        io.to(code).emit("updateState", session);
+        console.log(`Ręka gracza ${player.name} w sesji ${code} została zresetowana.`);
+    });
 
-  socket.on("shuffle", ({ code, playerId }: { code: string; playerId: string }) => {
-    const session = sessions[code];
-    const player = session?.players.find((p) => p.id === playerId);
-    if (player) {
-      player.library = shuffle(player.library);
-      io.to(code).emit("updateState", session);
-    }
-  });
-  
-  socket.on("changeLife", ({ code, playerId, newLife }: { code: string; playerId: string; newLife: number }) => {
-    const session = sessions[code];
-    const player = session?.players.find((p) => p.id === playerId);
-    if (player) {
-      player.life = newLife;
-      io.to(code).emit("updateState", session);
-    }
-  });
+    socket.on("draw", ({ code, playerId, count = 1 }: { code: string; playerId: string; count?: number }) => {
+        const session = sessions[code];
+        const player = session?.players.find((p) => p.id === playerId);
+        if (player) {
+            for (let i = 0; i < count; i++) {
+                const card = player.library.shift();
+                if (card) player.hand.push(card);
+            }
+            io.to(code).emit("updateState", session);
+        }
+    });
 
-socket.on(
+    socket.on("shuffle", ({ code, playerId }: { code: string; playerId: string }) => {
+        const session = sessions[code];
+        const player = session?.players.find((p) => p.id === playerId);
+        if (player) {
+            player.library = shuffle(player.library);
+            io.to(code).emit("updateState", session);
+        }
+    });
+    
+    socket.on("changeLife", ({ code, playerId, newLife }: { code: string; playerId: string; newLife: number }) => {
+        const session = sessions[code];
+        const player = session?.players.find((p) => p.id === playerId);
+        if (player) {
+            player.life = newLife;
+            io.to(code).emit("updateState", session);
+        }
+    });
+
+    socket.on(
         "moveCard",
         (payload: {
             code: string;
@@ -398,7 +411,6 @@ socket.on(
                     case "exile":
                         card = removeFromZone(player.exile, cardId);
                         break;
-                    // Nowa strefa
                     case "commanderZone":
                         card = removeFromZone(player.commanderZone, cardId);
                         break;
@@ -425,7 +437,8 @@ socket.on(
                 } else {
                     const cardToMove = (card as CardOnField).card || card;
                     // Użyj 'as CardType' do pewności, że typ jest poprawny
-                    player[to].push(cardToMove as CardType);
+                    // W TypeScript, musimy jawnie rzutować na poprawną strefę tablicy.
+                    (player[to] as CardType[]).push(cardToMove as CardType);
                 }
             }
 
@@ -433,21 +446,21 @@ socket.on(
         }
     );
 
-  socket.on("disconnect", () => {
-    console.log("Użytkownik rozłączył się:", socket.id);
+    socket.on("disconnect", () => {
+        console.log("Użytkownik rozłączył się:", socket.id);
 
-    for (const code in sessions) {
-      const session = sessions[code];
-      const idx = session.players.findIndex((p) => p.id === socket.id);
-      if (idx >= 0) {
-        session.players.splice(idx, 1);
-        io.to(code).emit("updateState", session);
-      }
-    }
-  });
+        for (const code in sessions) {
+            const session = sessions[code];
+            const idx = session.players.findIndex((p) => p.id === socket.id);
+            if (idx >= 0) {
+                session.players.splice(idx, 1);
+                io.to(code).emit("updateState", session);
+            }
+        }
+    });
 
 
-  socket.on('rotateCard', ({ code, playerId, cardId }) => {
+    socket.on('rotateCard', ({ code, playerId, cardId }) => {
         const session = sessions[code];
         if (!session) return;
 
@@ -463,73 +476,77 @@ socket.on(
         }
     });
 
-      socket.on("nextTurn", ({ code, playerId }) => {
+    socket.on("nextTurn", ({ code, playerId }) => {
         const session = sessions[code];
         if (!session) return;
 
         const player = session.players.find((p) => p.id === playerId);
         if (!player) return;
 
-        player.battlefield.forEach((cardOnField) => {
-          cardOnField.rotation = 0;
-        });
-
+        // Dobranie karty na początku tury
         const card = player.library.shift();
         if (card) {
-          player.hand.push(card);
+            player.hand.push(card);
         }
+        
+        // Odwrócenie wszystkich kart, aby były gotowe do użycia
+        player.battlefield.forEach((cardOnField) => {
+            cardOnField.rotation = 0;
+        });
 
         session.turn += 1;
 
-      const currentPlayerIndex = session.players.findIndex((p) => p.id === playerId);
-      const nextPlayerIndex = (currentPlayerIndex) % session.players.length;
-       const nextPlayer = session.players[nextPlayerIndex];
-       session.activePlayer = nextPlayer.id;
+        // Przejście do następnego gracza
+        const currentPlayerIndex = session.players.findIndex((p) => p.id === playerId);
+        // Użyj modulo dla bezpiecznego przejścia
+        const nextPlayerIndex = (currentPlayerIndex + 1) % session.players.length; 
+        const nextPlayer = session.players[nextPlayerIndex];
+        session.activePlayer = nextPlayer.id;
 
         io.to(code).emit("updateState", session);
-        console.log(`Tura gracza ${player.name} w sesji ${code} zakończona. Karty zresetowane, dobrano nową kartę.`);
-      });
+        console.log(`Tura gracza ${player.name} w sesji ${code} zakończona. Karty odwrócone, dobrano nową kartę.`);
+    });
 
-socket.on(
-           "changeMana",
-           ({
-             code,
-             playerId,
-             color,
-             newValue,
-           }: {
-             code: string;
-             playerId: string;
-             color: keyof Player["manaPool"];
-             newValue: number;
-           }) => {
-              const session = sessions[code];
-              if (!session) return;
+    socket.on(
+                "changeMana",
+                ({
+                    code,
+                    playerId,
+                    color,
+                    newValue,
+                }: {
+                    code: string;
+                    playerId: string;
+                    color: keyof Player["manaPool"];
+                    newValue: number;
+                }) => {
+                    const session = sessions[code];
+                    if (!session) return;
 
-              const player = session.players.find((p) => p.id === playerId);
-              if (!player) return;
+                    const player = session.players.find((p) => p.id === playerId);
+                    if (!player) return;
 
-              if (Object.prototype.hasOwnProperty.call(player.manaPool, color)) {
-                 player.manaPool[color] = newValue;
-                 io.to(code).emit("updateState", session);
-                 console.log(`Mana dla gracza ${player.name} (${color}) zmieniona na ${newValue}.`);
-              }
-           }
-       );
+                    if (Object.prototype.hasOwnProperty.call(player.manaPool, color)) {
+                        player.manaPool[color] = newValue;
+                        io.to(code).emit("updateState", session);
+                        console.log(`Mana dla gracza ${player.name} (${color}) zmieniona na ${newValue}.`);
+                    }
+                }
+            );
 
 
-      socket.on(
+    socket.on(
         "changeCounters",
         ({ code, playerId, type, newValue }: { code: string; playerId: string; type: string; newValue: number }) => {
-          const session = sessions[code];
-          const player = session?.players.find((p) => p.id === playerId);
-          if (player) {
-            player.counters[type] = newValue;
-            io.to(code).emit("updateState", session);
-            console.log(`Zaktualizowano licznik '${type}' dla gracza ${player.name} na: ${newValue}`);
-          }
+            const session = sessions[code];
+            const player = session?.players.find((p) => p.id === playerId);
+            if (player) {
+                player.counters[type] = newValue;
+                io.to(code).emit("updateState", session);
+                console.log(`Zaktualizowano licznik '${type}' dla gracza ${player.name} na: ${newValue}`);
+            }
         }
-      );
+    );
 
     socket.on("increment_card_stats", ({ code, playerId, cardId }) => {
         const session = sessions[code];
@@ -550,7 +567,8 @@ socket.on(
 
 });
 
-const PORT = process.env.PORT || 3001;
+// Użycie PORT z zmiennych środowiskowych Railway/systemu, z fallbackiem na 3001
+const PORT = process.env.PORT || 3001; 
 server.listen(PORT, () => {
-  console.log(`Serwer działa na http://localhost:${PORT}`);
+    console.log(`Serwer działa na http://localhost:${PORT}`);
 });
