@@ -106,7 +106,7 @@ io.on("connection", (socket) => {
     socket.join(code);
     
     let life = 20;
-    const initialDeck = [...deck];
+    let initialDeck = [...deck];
     let commander: CardType | undefined;
     let commanderZone: CardType[] = [];
     
@@ -180,7 +180,7 @@ io.on("connection", (socket) => {
     }
     
     let life = 20;
-    const initialDeck = [...deck];
+    let initialDeck = [...deck];
     let commander: CardType | undefined;
     let commanderZone: CardType[] = [];
 
@@ -248,7 +248,7 @@ io.on("connection", (socket) => {
                 
                 player.life = sessionType === "commander" ? 40 : 20;
                 
-                const deckToShuffle = [...player.initialDeck];
+                let deckToShuffle = [...player.initialDeck];
                 let commanderCard: CardType | undefined;
 
                 if (sessionType === "commander") {
