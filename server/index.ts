@@ -29,6 +29,7 @@ export interface CardOnField {
         power: number;
         toughness: number;
     }
+counters: number;
 }
 
 export interface Player {
@@ -409,7 +410,8 @@ io.on("connection", (socket) => {
                         stats: {
                             power: 0,
                             toughness: 0
-                        }
+                        },
+                        counters: 0
                     };
                     player.battlefield.push(cardOnField);
                 } else {
@@ -551,6 +553,102 @@ io.on("connection", (socket) => {
 
             io.to(code).emit("updateState", session);
             console.log(`Zwiększono statystyki karty ${cardId} dla gracza ${playerId}.`);
+        }
+    });
+
+    socket.on(
+        "moveAllCards",
+        ({ code, playerId, from, to }: { code: string; playerId: string; from: Zone; to: Zone }) => {
+            const session = sessions[code];
+            if (!session) return;
+            
+            const player = session.players.find((p) => p.id === playerId);
+            if (!player) return;
+
+            // Używamy typu Player jako klucza, by dostać się do tablic stref
+            const playerState = player as Player & Record<Zone, CardType[] | CardOnField[]>;
+
+            // Walidacja stref: Tę funkcję zaprojektowano dla przenoszenia stref *kart* (nie CardOnField).
+            // Można przenosić tylko: library, hand, graveyard, exile, commanderZone.
+            const movableZones: Zone[] = ["library", "hand", "graveyard", "exile", "commanderZone"];
+            
+            if (from === "battlefield" || to === "battlefield") {
+                 // Wyprowadzenie wszystkich kart z pola bitwy wymaga specjalnej obsługi 
+                 // (wyciągnięcia CardType z CardOnField), co nie jest uniwersalnym przenoszeniem tablicy.
+                 // Używamy pętli forEach/map, jeśli musimy obsłużyć pole bitwy.
+                 // Na potrzeby przenoszenia Cmentarz -> Biblioteka lub Wygnaństwo -> Biblioteka
+                 // ograniczamy się do prostych tablic CardType[].
+
+                 // Przeniesienie pola bitwy musi być jawnie obsłużone, jeśli jest to wymagane.
+                 // W przypadku Cmentarz/Wygnaństwo -> Biblioteka, to nie jest potrzebne.
+                 socket.emit("error", "Przenoszenie wszystkich kart z/do strefy 'battlefield' nie jest obsługiwane przez to zdarzenie.");
+                 return;
+            }
+
+            if (!movableZones.includes(from) || !movableZones.includes(to)) {
+                socket.emit("error", `Nieprawidłowa strefa: 'from' = ${from}, 'to' = ${to}.`);
+                return;
+            }
+
+            // Przenoszenie kart ze strefy źródłowej do strefy docelowej
+            // @ts-ignore: Wiemy, że to będą CardType[] na podstawie walidacji 'movableZones'
+            const sourceArray: CardType[] = playerState[from] as CardType[];
+            // @ts-ignore
+            const destinationArray: CardType[] = playerState[to] as CardType[];
+            
+            // Przeniesienie wszystkich elementów
+            destinationArray.push(...sourceArray);
+            
+            // Wyczyść strefę źródłową
+            sourceArray.length = 0;
+
+            // Jeśli przeniesiono do Biblioteki, przetasuj ją
+            if (to === "library") {
+                //player.library = shuffle(player.library);
+                console.log(`[MOVEALL] Wszystkie karty z ${from} przeniesione do Biblioteki i przetasowane.`);
+            } else {
+                 console.log(`[MOVEALL] Wszystkie karty z ${from} przeniesione do ${to}.`);
+            }
+
+            io.to(code).emit("updateState", session);
+        }
+    );
+
+        // NOWY HANDLER: Zwiększenie licznika karty (+1)
+    socket.on("increment_card_counters", ({ code, playerId, cardId }) => {
+        const session = sessions[code];
+        if (!session) return;
+
+        const player = session.players.find(p => p.id === playerId);
+        if (!player) return;
+
+        const cardOnField = player.battlefield.find(c => c.id === cardId);
+        if (cardOnField) {
+            // 1. Zwiększenie samego licznika
+            cardOnField.counters += 1;
+            
+
+            io.to(code).emit("updateState", session);
+            console.log(`Zwiększono licznik karty ${cardId} dla gracza ${playerId}. Nowy licznik: ${cardOnField.counters}`);
+        }
+    });
+
+            // NOWY HANDLER: Zmniejszenia licznika karty (-1)
+    socket.on("decrease_card_counters", ({ code, playerId, cardId }) => {
+        const session = sessions[code];
+        if (!session) return;
+
+        const player = session.players.find(p => p.id === playerId);
+        if (!player) return;
+
+        const cardOnField = player.battlefield.find(c => c.id === cardId);
+        if (cardOnField) {
+            // 1. Zmniejszono samego licznika
+            cardOnField.counters -= 1;
+            
+
+            io.to(code).emit("updateState", session);
+            console.log(`Zmniejszono licznik karty ${cardId} dla gracza ${playerId}. Nowy licznik: ${cardOnField.counters}`);
         }
     });
 
