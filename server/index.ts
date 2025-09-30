@@ -652,6 +652,26 @@ io.on("connection", (socket) => {
         }
     });
 
+
+        // NOWA OBSŁUGA USTAWIANIA WARTOŚCI POWER I TOUGHNESS
+    socket.on("set_card_stats", ({ code, playerId, cardId, powerValue, toughnessValue }) => {
+        const session = sessions[code];
+        if (!session) return;
+
+        const player = session.players.find(p => p.id === playerId);
+        if (!player) return;
+
+        const cardOnField = player.battlefield.find(c => c.id === cardId);
+        if (cardOnField) {
+            // Ustawienie statystyk na podane wartości
+            cardOnField.stats.power = powerValue;
+            cardOnField.stats.toughness = toughnessValue;
+
+            io.to(code).emit("updateState", session);
+            console.log(`Ustawiono statystyki karty ${cardId} na P:${powerValue}, T:${toughnessValue} dla gracza ${playerId}.`);
+        }
+    });
+
 });
 
 const PORT = process.env.PORT || 3001;
