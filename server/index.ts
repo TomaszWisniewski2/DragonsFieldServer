@@ -17,6 +17,16 @@ export interface CardType {
     basePower?: string | null;
     baseToughness?: string | null;
     loyalty?: number | null;
+    
+    // NOWE POLA DLA DRUGIEJ STRONY KARTY (DFC)
+    hasSecondFace?: boolean; // Flaga ułatwiająca sprawdzenie, czy karta ma drugą stronę
+    secondFaceName?: string;
+    secondFaceImage?: string;
+    secondFaceManaCost?: string;
+    secondFaceTypeLine?: string;
+    secondFaceBasePower?: string | null;
+    secondFaceBaseToughness?: string | null;
+    secondFaceLoyalty?: number | null;
 }
 
 export interface CardOnField {
@@ -25,6 +35,7 @@ export interface CardOnField {
     x: number;
     y: number;
     rotation: number;
+    isFlipped: boolean;
     stats: {
         power: number;
         toughness: number;
@@ -407,11 +418,12 @@ io.on("connection", (socket) => {
                         x: x ?? 50,
                         y: y ?? 50,
                         rotation: 0,
+                        isFlipped: false, // DODANO: Domyślnie na pole walki wchodzi pierwszą stroną
                         stats: {
                             power: 0,
                             toughness: 0
                         },
-                        counters: 0
+                        counters: 0
                     };
                     player.battlefield.push(cardOnField);
                 } else {
@@ -463,6 +475,22 @@ io.on("connection", (socket) => {
         const card = player.battlefield.find(c => c.id === cardId);
         if (card) {
             card.rotation = card.rotation === 0 ? 90 : 0;
+            
+            io.to(code).emit('updateState', session); 
+            console.log(`Karta ${cardId} gracza ${playerId} w sesji ${code} została obrócona.`);
+        }
+    });
+
+    socket.on('rotateCard180', ({ code, playerId, cardId }) => {
+        const session = sessions[code];
+        if (!session) return;
+
+        const player = session.players.find(p => p.id === playerId);
+        if (!player) return;
+
+        const card = player.battlefield.find(c => c.id === cardId);
+        if (card) {
+            card.rotation = card.rotation === 0 ? 180 : 0;
             
             io.to(code).emit('updateState', session); 
             console.log(`Karta ${cardId} gracza ${playerId} w sesji ${code} została obrócona.`);
@@ -670,6 +698,62 @@ io.on("connection", (socket) => {
             io.to(code).emit("updateState", session);
             console.log(`Ustawiono statystyki karty ${cardId} na P:${powerValue}, T:${toughnessValue} dla gracza ${playerId}.`);
         }
+    });
+
+
+    socket.on("flipCard", ({ code, playerId, cardId }: { code: string; playerId: string; cardId: string }) => {
+        const session = sessions[code];
+        if (!session) return;
+
+        const player = session.players.find(p => p.id === playerId);
+        if (!player) return;
+
+        const cardOnField = player.battlefield.find(c => c.id === cardId);
+        if (cardOnField && cardOnField.card.hasSecondFace) {
+            // Zamień wartości między kartą bazową a drugą stroną
+            
+            const card = cardOnField.card;
+            const isFlipped = cardOnField.isFlipped;
+            
+            // --- Logika zamiany pól ---
+            // Używamy tymczasowych zmiennych do bezpiecznej zamiany, 
+            // zakładając, że pola 'secondFace' są puste (null/undefined) w stanie bazowym,
+            // więc ich wartość po zamianie powinna trafić do pola bazowego.
+
+            const tempName = card.name;
+            const tempImage = card.image;
+            const tempManaCost = card.mana_cost;
+            const tempTypeLine = card.type_line;
+            const tempBasePower = card.basePower;
+            const tempBaseToughness = card.baseToughness;
+            const tempLoyalty = card.loyalty;
+
+            // Ustaw nowe wartości bazowe (dane z drugiej strony)
+            card.name = card.secondFaceName!;
+            card.image = card.secondFaceImage;
+            card.mana_cost = card.secondFaceManaCost;
+            card.type_line = card.secondFaceTypeLine;
+            card.basePower = card.secondFaceBasePower;
+            card.baseToughness = card.secondFaceBaseToughness;
+            card.loyalty = card.secondFaceLoyalty;
+
+            // Ustaw nowe wartości drugiej strony (dane z poprzedniej strony bazowej)
+            card.secondFaceName = tempName;
+            card.secondFaceImage = tempImage;
+            card.secondFaceManaCost = tempManaCost;
+            card.secondFaceTypeLine = tempTypeLine;
+            card.secondFaceBasePower = tempBasePower;
+            card.secondFaceBaseToughness = tempBaseToughness;
+            card.secondFaceLoyalty = tempLoyalty;
+
+            // Zmień status odwrócenia
+            cardOnField.isFlipped = !isFlipped;
+            
+            io.to(code).emit("updateState", session);
+            console.log(`Odwrócono kartę ${card.name} (ID: ${cardId}) dla gracza ${playerId}. Nowa strona: ${cardOnField.isFlipped ? 'Druga' : 'Pierwsza'}`);
+        } else if (cardOnField) {
+            socket.emit("error", `Karta ${cardOnField.card.name} nie jest kartą dwustronną (DFC).`);
+        }
     });
 
 });
