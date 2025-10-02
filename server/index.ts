@@ -7,6 +7,7 @@ import cors from "cors";
 // Zaktualizowano Zone, aby zawierała commanderZone
 export type Zone = "hand" | "library" | "battlefield" | "graveyard" | "exile" | "commanderZone";
 export type SessionType = "standard" | "commander";
+export type SortCriteria = "mana_cost" | "name" | "type_line";
 
 export interface CardType {
     id: string;
@@ -99,6 +100,55 @@ initialSessions.forEach(({ code, sessionType }) => {
     };
     console.log(`Zainicjowano stałą sesję: ${code} (${sessionType})`);
 });
+
+// ==== LOGIKA SORTOWANIA (NOWA FUNKCJA POMOCNICZA) ====
+// --------------------------------------------------------------------------------------------------
+function sortCards(hand: CardType[], criteria: SortCriteria): CardType[] {
+    // Kopia tablicy, aby nie modyfikować jej bezpośrednio w trakcie sortowania
+    const sortedHand = [...hand];
+
+    sortedHand.sort((a, b) => {
+        let valA: string | number | undefined;
+        let valB: string | number | undefined;
+        
+        switch (criteria) {
+            case "mana_cost":
+                // Dla mana_cost używamy długości stringa jako prostej metryki sortowania
+                // Można to ulepszyć, używając biblioteki do parsowania kosztu many (np. manacost-to-cmc)
+                // lub sortując alfabetycznie, co daje przyzwoity efekt.
+                valA = a.mana_cost || '';
+                valB = b.mana_cost || '';
+                
+                // Sortowanie alfabetyczne po stringu (dla efektu 'zwykłego' sortowania po cenie)
+                if (valA < valB) return -1;
+                if (valA > valB) return 1;
+                return 0;
+
+            case "name":
+                valA = a.name.toLowerCase();
+                valB = b.name.toLowerCase();
+                if (valA < valB) return -1;
+                if (valA > valB) return 1;
+                return 0;
+
+            case "type_line":
+                // W Magic The Gathering zazwyczaj sortuje się po typie w kolejności:
+                // Landy, Kreatury, Sorcery, Instants, Artefakty, Enchantmenty.
+                // Tutaj używamy prostego sortowania alfabetycznego po Type Line.
+                valA = a.type_line?.toLowerCase() || '';
+                valB = b.type_line?.toLowerCase() || '';
+                if (valA < valB) return -1;
+                if (valA > valB) return 1;
+                return 0;
+
+            default:
+                return 0; // Brak sortowania
+        }
+    });
+
+    return sortedHand;
+}
+// ----------------------
 // ===========================================
 
 // --------------------------------------------------------------------------------------------------
@@ -285,48 +335,47 @@ io.on("connection", (socket) => {
     });
 
     socket.on("resetPlayer", ({ code, playerId }: { code: string; playerId: string }) => {
-        const session = sessions[code];
-        if (!session) return;
+    const session = sessions[code];
+    if (!session) return;
 
-        const player = session.players.find((p) => p.id === playerId);
-        if (!player) return;
+    const player = session.players.find((p) => p.id === playerId);
+    if (!player) return;
 
-        // Przenieś wszystkie karty z ręki, pola walki, cmentarza i stref dowódcy do biblioteki
-        const allCards = [
-            ...player.hand,
-            ...player.graveyard,
-            ...player.exile,
-            ...player.battlefield.map(cardOnField => cardOnField.card)
-        ];
-        
-        let deckToShuffle = [...player.initialDeck];
+    // KROK 1: Użyj bazowej talii do resetu. Ta talia ZAWSZE zawiera prawidłową liczbę kart.
+    let fullDeckForShuffle = [...player.initialDeck];
 
-        if (session.sessionType === "commander" && player.commander) {
-            player.commanderZone = [player.commander];
-            // Usuń kartę dowódcy z talii do tasowania
-            deckToShuffle = deckToShuffle.filter(c => c.id !== player.commander?.id);
-        } else {
-            player.commanderZone = [];
-        }
-        
-        // Reset życia na początkowe (20/40)
-        player.life = session.sessionType === "commander" ? 40 : 20;
+    // KROK 2: Obsługa dowódcy w formacie Commander
+    if (session.sessionType === "commander" && player.commander) {
+        // Ustaw dowódcę w strefie dowódcy
+        player.commanderZone = [player.commander];
+        // Usuń kartę dowódcy z talii do tasowania (ponieważ zaczyna w commanderZone)
+        fullDeckForShuffle = fullDeckForShuffle.filter(c => c.id !== player.commander?.id);
+    } else {
+        player.commanderZone = [];
+    }
+    
+    // KROK 3: Reset życia i pozostałych stref.
+    player.life = session.sessionType === "commander" ? 40 : 20;
 
-        player.hand = [];
-        player.graveyard = [];
-        player.exile = [];
-        player.battlefield = [];
-        
-        player.library = shuffle([...deckToShuffle, ...allCards]);
+    player.hand = [];
+    player.graveyard = [];
+    player.exile = [];
+    player.battlefield = [];
+    
+    // KROK 4: Wypełnij bibliotekę i przetasuj.
+    // Zauważ: Nie dodajemy już kart z bieżących stref (hand, graveyard, etc.)
+    // Ponieważ initialDeck jest źródłem prawdy o tym, co powinno być w talii.
+    player.library = shuffle(fullDeckForShuffle);
 
-        for (let i = 0; i < 7 && player.library.length > 0; i++) {
-            const card = player.library.shift();
-            if (card) player.hand.push(card);
-        }
-        
-        io.to(code).emit("updateState", session);
-        console.log(`Gracz ${player.name} w sesji ${code} został zresetowany.`);
-    });
+    // KROK 5: Dociągnij rękę startową (7 kart)
+    for (let i = 0; i < 7 && player.library.length > 0; i++) {
+        const card = player.library.shift();
+        if (card) player.hand.push(card);
+    }
+    
+    io.to(code).emit("updateState", session);
+    console.log(`Gracz ${player.name} w sesji ${code} został zresetowany.`);
+});
     
     socket.on("draw", ({ code, playerId, count = 1 }: { code: string; playerId: string; count?: number }) => {
         const session = sessions[code];
@@ -358,84 +407,93 @@ io.on("connection", (socket) => {
         }
     });
 
-    socket.on(
-        "moveCard",
-        (payload: {
-            code: string;
-            playerId: string;
-            from: Zone;
-            to: Zone;
-            cardId: string;
-            x?: number;
-            y?: number;
-        }) => {
-            const { code, playerId, from, to, cardId, x, y } = payload;
-            const session = sessions[code];
-            if (!session) return;
-            
-            const player = session.players.find((p) => p.id === playerId);
-            if (!player) return;
+socket.on(
+    "moveCard",
+    (payload: {
+        code: string;
+        playerId: string;
+        from: Zone;
+        to: Zone;
+        cardId: string;
+        x?: number;
+        y?: number;
+        position?: number; // NOWE: pozycja w ręce
+    }) => {
+        const { code, playerId, from, to, cardId, x, y, position } = payload;
+        const session = sessions[code];
+        if (!session) return;
 
-            if (from === "battlefield" && to === "battlefield") {
-                const c = player.battlefield.find((b) => b.id === cardId);
-                if (c) {
-                    c.x = typeof x === "number" ? x : c.x;
-                    c.y = typeof y === "number" ? y : c.y;
-                }
-            } else {
-                let card: CardType | CardOnField | null;
-                
-                switch (from) {
-                    case "hand":
-                        card = removeFromZone(player.hand, cardId);
-                        break;
-                    case "library":
-                        card = removeFromZone(player.library, cardId);
-                        break;
-                    case "graveyard":
-                        card = removeFromZone(player.graveyard, cardId);
-                        break;
-                    case "battlefield":
-                        card = removeFromZone(player.battlefield, cardId);
-                        break;
-                    case "exile":
-                        card = removeFromZone(player.exile, cardId);
-                        break;
-                    case "commanderZone":
-                        card = removeFromZone(player.commanderZone, cardId);
-                        break;
-                    default:
-                        return;
-                }
-    
-                if (!card) return;
-    
-                if (to === "battlefield") {
-                    const cardToPlace = (card as CardOnField).card || card;
-                    const cardOnField: CardOnField = {
-                        id: cardToPlace.id,
-                        card: cardToPlace,
-                        x: x ?? 50,
-                        y: y ?? 50,
-                        rotation: 0,
-                        isFlipped: false, // DODANO: Domyślnie na pole walki wchodzi pierwszą stroną
-                        stats: {
-                            power: 0,
-                            toughness: 0
-                        },
-                        counters: 0
-                    };
-                    player.battlefield.push(cardOnField);
-                } else {
-                    const cardToMove = (card as CardOnField).card || card;
-                    // @ts-ignore: Dostęp do strefy gracza za pomocą stringa
-                    player[to].push(cardToMove as CardType);
-                }
-            }
+        const player = session.players.find((p) => p.id === playerId);
+        if (!player) return;
 
-            io.to(code).emit("updateState", session);
-        }
-    );
+        if (from === "battlefield" && to === "battlefield") {
+            const c = player.battlefield.find((b) => b.id === cardId);
+            if (c) {
+                c.x = typeof x === "number" ? x : c.x;
+                c.y = typeof y === "number" ? y : c.y;
+            }
+        } else {
+            let card: CardType | CardOnField | null;
+
+            switch (from) {
+                case "hand":
+                    card = removeFromZone(player.hand, cardId);
+                    break;
+                case "library":
+                    card = removeFromZone(player.library, cardId);
+                    break;
+                case "graveyard":
+                    card = removeFromZone(player.graveyard, cardId);
+                    break;
+                case "battlefield":
+                    card = removeFromZone(player.battlefield, cardId);
+                    break;
+                case "exile":
+                    card = removeFromZone(player.exile, cardId);
+                    break;
+                case "commanderZone":
+                    card = removeFromZone(player.commanderZone, cardId);
+                    break;
+                default:
+                    return;
+            }
+
+            if (!card) return;
+
+            if (to === "battlefield") {
+                const cardToPlace = (card as CardOnField).card || card;
+                const cardOnField: CardOnField = {
+                    id: cardToPlace.id,
+                    card: cardToPlace,
+                    x: x ?? 50,
+                    y: y ?? 50,
+                    rotation: 0,
+                    isFlipped: false, // domyślnie odkryta
+                    stats: {
+                        power: 0,
+                        toughness: 0
+                    },
+                    counters: 0
+                };
+                player.battlefield.push(cardOnField);
+            } else {
+                const cardToMove = (card as CardOnField).card || card;
+
+                if (to === "hand" && typeof position === "number") {
+                    // Wstawiamy w konkretne miejsce w ręce
+                    player.hand.splice(position, 0, cardToMove as CardType);
+                } else {
+                    // Standardowe zachowanie: dodanie na końcu
+                    // @ts-ignore: Dostęp do strefy gracza za pomocą stringa
+                    player[to].push(cardToMove as CardType);
+                }
+            }
+        }
+
+        io.to(code).emit("updateState", session);
+    }
+);
+
 
     socket.on("disconnect", () => {
         console.log("Użytkownik rozłączył się:", socket.id);
@@ -755,6 +813,22 @@ io.on("connection", (socket) => {
             socket.emit("error", `Karta ${cardOnField.card.name} nie jest kartą dwustronną (DFC).`);
         }
     });
+
+    socket.on(
+        "sortHand",
+        ({ code, playerId, criteria }: { code: string; playerId: string; criteria: SortCriteria }) => {
+            const session = sessions[code];
+            if (!session) return;
+            
+            const player = session.players.find((p) => p.id === playerId);
+            if (!player) return;
+
+            // Wywołanie nowej logiki sortującej
+            player.hand = sortCards(player.hand, criteria);
+
+            io.to(code).emit("updateState", session);
+            console.log(`[SORT] Ręka gracza ${player.name} w sesji ${code} posortowana wg: ${criteria}.`);
+        });
 
 });
 
