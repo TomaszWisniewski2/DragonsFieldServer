@@ -496,14 +496,21 @@ socket.on(
                 const cardToMove = (card as CardOnField).card || card;
 
                 if (to === "hand" && typeof position === "number") {
-                    // Wstawiamy w konkretne miejsce w ręce
-                    player.hand.splice(position, 0, cardToMove as CardType);
-                } else {
-                    // Standardowe zachowanie: dodanie na końcu
-                    // @ts-ignore: Dostęp do strefy gracza za pomocą stringa
-                    player[to].push(cardToMove as CardType);
+                        // Wstawiamy w konkretne miejsce w ręce
+                        player.hand.splice(position, 0, cardToMove as CardType);
+                    } 
+                    // ZMIANA TUTAJ: Dodajemy obsługę biblioteki i strefy dowódcy
+                    else if (to === "library" || to === "commanderZone") {
+                        // Dodaj kartę na górę biblioteki (indeks 0)
+                        // @ts-ignore
+                        player[to].unshift(cardToMove as CardType);
+                    } 
+                    else {
+                        // Standardowe zachowanie dla pozostałych stref (cmentarz, exile): dodanie na końcu
+                        // @ts-ignore
+                        player[to].push(cardToMove as CardType);
+                    }
                 }
-            }
         }
 
         io.to(code).emit("updateState", session);
