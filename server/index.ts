@@ -424,97 +424,109 @@ if (currentSessionType === "commander") {
     });
 
 socket.on(
-    "moveCard",
-    (payload: {
-        code: string;
-        playerId: string;
-        from: Zone;
-        to: Zone;
-        cardId: string;
-        x?: number;
-        y?: number;
-        position?: number; // NOWE: pozycja w ręce
-    }) => {
-        const { code, playerId, from, to, cardId, x, y, position } = payload;
-        const session = sessions[code];
-        if (!session) return;
+    "moveCard",
+    (payload: {
+        code: string;
+        playerId: string;
+        from: Zone;
+        to: Zone;
+        cardId: string;
+        x?: number;
+        y?: number;
+        position?: number; // NOWE: pozycja w ręce
+    }) => {
+        const { code, playerId, from, to, cardId, x, y, position } = payload;
+        const session = sessions[code];
+        if (!session) return;
 
-        const player = session.players.find((p) => p.id === playerId);
-        if (!player) return;
+        const player = session.players.find((p) => p.id === playerId);
+        if (!player) return;
 
-        if (from === "battlefield" && to === "battlefield") {
-            const c = player.battlefield.find((b) => b.id === cardId);
-            if (c) {
-                c.x = typeof x === "number" ? x : c.x;
-                c.y = typeof y === "number" ? y : c.y;
-            }
-        } else {
-            let card: CardType | CardOnField | null;
+        // --- ZMIANA: Obsługa przenoszenia karty W OBRĘBIE POLA BITWY ---
+        if (from === "battlefield" && to === "battlefield") {
+            const cardIndex = player.battlefield.findIndex((b) => b.id === cardId);
+            
+            if (cardIndex !== -1) {
+                // 1. Usuń kartę z aktualnej pozycji
+                const [c] = player.battlefield.splice(cardIndex, 1);
+                
+                // 2. Zaktualizuj współrzędne
+                c.x = typeof x === "number" ? x : c.x;
+                c.y = typeof y === "number" ? y : c.y;
+                
+                // 3. Dodaj kartę z powrotem na koniec tablicy,
+                // co zapewni jej najwyższy z-index podczas renderowania.
+                player.battlefield.push(c);
+            }
+        } else {
+            let card: CardType | CardOnField | null;
 
-            switch (from) {
-                case "hand":
-                    card = removeFromZone(player.hand, cardId);
-                    break;
-                case "library":
-                    card = removeFromZone(player.library, cardId);
-                    break;
-                case "graveyard":
-                    card = removeFromZone(player.graveyard, cardId);
-                    break;
-                case "battlefield":
-                    card = removeFromZone(player.battlefield, cardId);
-                    break;
-                case "exile":
-                    card = removeFromZone(player.exile, cardId);
-                    break;
-                case "commanderZone":
-                    card = removeFromZone(player.commanderZone, cardId);
-                    break;
-                default:
-                    return;
-            }
+            switch (from) {
+                case "hand":
+                    card = removeFromZone(player.hand, cardId);
+                    break;
+                case "library":
+                    card = removeFromZone(player.library, cardId);
+                    break;
+                case "graveyard":
+                    card = removeFromZone(player.graveyard, cardId);
+                    break;
+                case "battlefield":
+                    card = removeFromZone(player.battlefield, cardId);
+                    break;
+                case "exile":
+                    card = removeFromZone(player.exile, cardId);
+                    break;
+                case "commanderZone":
+                    card = removeFromZone(player.commanderZone, cardId);
+                    break;
+                default:
+                    return;
+            }
 
-            if (!card) return;
+            if (!card) return;
 
-            if (to === "battlefield") {
-                const cardToPlace = (card as CardOnField).card || card;
-                const cardOnField: CardOnField = {
-                    id: cardToPlace.id,
-                    card: cardToPlace,
-                    x: x ?? 50,
-                    y: y ?? 50,
-                    rotation: 0,
-                    isFlipped: false, // domyślnie odkryta
-                    stats: {
-                        power: 0,
-                        toughness: 0
-                    },
-                    counters: 0
-                };
-                player.battlefield.push(cardOnField);
-            } else {
-                const cardToMove = (card as CardOnField).card || card;
+            // Ta sekcja już działała poprawnie, dodając kartę na koniec tablicy (push),
+            // co zapewnia jej najwyższy z-index przy wchodzeniu na pole bitwy.
+            if (to === "battlefield") {
+                const cardToPlace = (card as CardOnField).card || card;
+                const cardOnField: CardOnField = {
+                    id: cardToPlace.id,
+                    card: cardToPlace,
+                    x: x ?? 50,
+                    y: y ?? 50,
+                    rotation: 0,
+                    isFlipped: false, // domyślnie odkryta
+                    stats: {
+                        power: 0,
+                        toughness: 0
+                    },
+                    counters: 0
+                };
+                player.battlefield.push(cardOnField);
+            } else {
+                const cardToMove = (card as CardOnField).card || card;
 
-                if (to === "hand" && typeof position === "number") {
-                        // Wstawiamy w konkretne miejsce w ręce
-                        player.hand.splice(position, 0, cardToMove as CardType);
-                    } 
-                    // ZMIANA TUTAJ: Dodajemy obsługę biblioteki i strefy dowódcy
-                    else if (to === "library" || to === "commanderZone") {
-                        // Dodaj kartę na górę biblioteki (indeks 0)
-                        // @ts-ignore
-                        player[to].unshift(cardToMove as CardType);
-                    } 
-                    else {
-                        // Standardowe zachowanie dla pozostałych stref (cmentarz, exile): dodanie na końcu
-                        // @ts-ignore
-                        player[to].push(cardToMove as CardType);
-                    }
-                }
-        }
+                if (to === "hand" && typeof position === "number") {
+                        // Wstawiamy w konkretne miejsce w ręce
+                        player.hand.splice(position, 0, cardToMove as CardType);
+                    } 
+                    // ZMIANA TUTAJ: Dodajemy obsługę biblioteki i strefy dowódcy
+                    else if (to === "library" || to === "commanderZone") {
+                        // Dodaj kartę na górę biblioteki (indeks 0)
+                        // @ts-ignore
+                        player[to].unshift(cardToMove as CardType);
+                    } 
+                    else {
+                        // Standardowe zachowanie dla pozostałych stref (cmentarz, exile): dodanie na końcu
+                        // @ts-ignore
+                        player[to].push(cardToMove as CardType);
+                    }
+                }
+        }
 
-        io.to(code).emit("updateState", session);
-    }
+        io.to(code).emit("updateState", session);
+    }
 );
 
 
