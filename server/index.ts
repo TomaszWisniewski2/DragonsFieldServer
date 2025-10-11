@@ -54,8 +54,8 @@ export interface Player {
     battlefield: CardOnField[];
     graveyard: CardType[];
     exile: CardType[];
-    commanderZone: CardType[]; // Nowa strefa
-    commander?: CardType; // Nowy, opcjonalny atrybut dla karty dowódcy
+    commanderZone: CardType[]; //  strefa
+    commander?: CardType; // opcjonalny atrybut dla karty dowódcy
     manaPool: { W: number; U: number; B: number; R: number; G: number; C: number };
     counters: { [key: string]: number };
 }
@@ -65,7 +65,7 @@ export interface Session {
     players: Player[];
     turn: number;
     activePlayer: string;
-    sessionType: SessionType; // Nowy atrybut
+    sessionType: SessionType; 
 }
 
 // ==== Setup serwera ====
@@ -183,6 +183,10 @@ function removeFromZone<T extends { id: string }>(zoneArr: T[], id: string): T |
     const idx = zoneArr.findIndex((c) => c.id === id);
     if (idx >= 0) return zoneArr.splice(idx, 1)[0];
     return null;
+}
+
+function getRandomInt(max: number): number {
+    return Math.floor(Math.random() * max);
 }
 
 // ==== Socket.IO ====
@@ -829,6 +833,86 @@ socket.on(
             io.to(code).emit("updateState", session);
             console.log(`[SORT] Ręka gracza ${player.name} w sesji ${code} posortowana wg: ${criteria}.`);
         });
+
+        // -------------------------------------------------------------------------------------
+// ==== NOWY HANDLER: moveAllToBottom (Przeniesienie na Dół Biblioteki) ====
+// -------------------------------------------------------------------------------------
+
+    socket.on(
+        "moveAllToBottom",
+        ({ code, playerId, from, to }: { code: string; playerId: string; from: Zone; to: Zone }) => {
+            const session = sessions[code];
+            if (!session) return;
+            
+            const player = session.players.find((p) => p.id === playerId);
+            if (!player) return;
+
+            // Używamy typu Player jako klucza, by dostać się do tablic stref
+            const playerState = player as Player & Record<Zone, CardType[] | CardOnField[]>;
+
+            // Walidacja: MUSI być do biblioteki i NIE MOŻE być z/do battlefield
+            if (to !== "library" || from === "battlefield") {
+                socket.emit("error", "Akcja 'moveAllToBottom' jest dozwolona tylko DO biblioteki i NIE Z pola bitwy.");
+                return;
+            }
+
+// @ts-ignore
+            const sourceArray: CardType[] = playerState[from] as CardType[];
+            const destinationArray: CardType[] = playerState["library"];
+
+            // KROK 1: Kopiowanie kart do tymczasowej tablicy
+            const cardsToMove = [...sourceArray];
+
+            // KROK 2: Wyczyść strefę źródłową
+            sourceArray.length = 0;
+
+            // KROK 3: ZAMIANA: Używamy push, aby wstawić na koniec tablicy,
+            // ponieważ w Twoim systemie, jeśli unshift (początek) to góra,
+            // to push (koniec) musi być DOŁEM.
+            destinationArray.push(...cardsToMove); 
+
+            io.to(code).emit("updateState", session);
+            console.log(`[MOVEBOTTOM] Wszystkie karty z ${from} przeniesione na DÓŁ Biblioteki.`);
+        }
+    );
+
+// -------------------------------------------------------------------------------------
+// ==== NOWY HANDLER: discardRandomCard (Wyrzucenie losowej karty z ręki do grobu) ====
+// -------------------------------------------------------------------------------------
+
+socket.on(
+    "discardRandomCard",
+    ({ code, playerId }: { code: string; playerId: string }) => {
+        const session = sessions[code];
+        if (!session) return;
+        
+        const player = session.players.find((p) => p.id === playerId);
+        if (!player) return;
+
+        const hand = player.hand;
+        const graveyard = player.graveyard;
+
+        if (hand.length === 0) {
+            socket.emit("error", "Nie masz żadnych kart w ręce, aby coś odrzucić.");
+            return;
+        }
+
+        // 1. Wylosowanie indeksu karty
+        const randomIndex = getRandomInt(hand.length);
+
+        // 2. Usunięcie karty z ręki za pomocą splice
+        // splice zwraca tablicę usuniętych elementów, więc bierzemy [0]
+        const [discardedCard] = hand.splice(randomIndex, 1);
+
+        // 3. Dodanie usuniętej karty do cmentarza
+        if (discardedCard) {
+            graveyard.push(discardedCard);
+            console.log(`[DISCARD] Gracz ${player.name} odrzucił losowo kartę: ${discardedCard.name} do Grobu.`);
+        }
+
+        io.to(code).emit("updateState", session);
+    }
+);
 
 });
 
