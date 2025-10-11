@@ -298,23 +298,35 @@ io.on("connection", (socket) => {
                 
                 player.life = currentSessionType === "commander" ? 40 : 20;
                 
-                let deckToShuffle = [...player.initialDeck];
-                let commanderCard: CardType | undefined;
+let deckToShuffle = [...player.initialDeck];
+let commanderCard: CardType | undefined = player.commander; // Zacznij od obecnego dowódcy
 
-                if (currentSessionType === "commander") {
-                    // Zakładamy, że klient ustawił pierwszą kartę jako dowódcę
-                    commanderCard = deckToShuffle.shift();
-                    if (commanderCard) {
-                        player.commander = commanderCard;
-                        player.commanderZone = [commanderCard];
-                    } else {
-                        socket.emit("error", `Commander card not found for player ${player.name}.`);
-                        return;
-                    }
-                } else {
-                    player.commander = undefined;
-                    player.commanderZone = [];
-                }
+if (currentSessionType === "commander") {
+    if (!player.commander) { // JEŚLI DOWÓDCA NIE BYŁ JESZCZE USTAWIONY
+        // Ustawienie dowódcy po raz pierwszy (jak w oryginalnym kodzie)
+        commanderCard = deckToShuffle.shift(); 
+        
+        if (commanderCard) {
+            player.commander = commanderCard;
+            player.commanderZone = [commanderCard];
+        } else {
+            socket.emit("error", `Commander card not found for player ${player.name}.`);
+            return; // Zakończenie inicjalizacji gracza
+        }
+    } else {
+        // Dowódca już jest, upewnij się, że nie jest w talii do potasowania
+        // Usuń kartę dowódcy z talii do potasowania (może być potrzebne, jeśli initialDeck zawiera dowódcę)
+        const commanderIndex = deckToShuffle.findIndex(card => card.id === player.commander!.id);
+        if (commanderIndex > -1) {
+            deckToShuffle.splice(commanderIndex, 1);
+        }
+        player.commanderZone = [player.commander!]; // Ustaw go w strefie
+    }
+} else {
+    // Tryb inny niż Commander
+    player.commander = undefined;
+    player.commanderZone = [];
+}
                 
                 player.library = shuffle(deckToShuffle);
                 player.hand = [];
@@ -565,7 +577,7 @@ socket.on(
 
         const player = session.players.find((p) => p.id === playerId);
         if (!player) return;
-        if (session.activePlayer !== playerId) return; // Tylko aktywny gracz może zakończyć turę
+        //if (session.activePlayer !== playerId) return; // Tylko aktywny gracz może zakończyć turę
 
         player.battlefield.forEach((cardOnField) => {
             cardOnField.rotation = 0;
@@ -579,7 +591,7 @@ socket.on(
         session.turn += 1;
 
         const currentPlayerIndex = session.players.findIndex((p) => p.id === playerId);
-        const nextPlayerIndex = (currentPlayerIndex + 1) % session.players.length; // Zmieniono na +1
+        const nextPlayerIndex = (currentPlayerIndex ) % session.players.length; // Zmieniono na +1
 
         const nextPlayer = session.players[nextPlayerIndex];
         session.activePlayer = nextPlayer.id;
