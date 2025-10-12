@@ -599,10 +599,8 @@ io.on("connection", (socket) => {
           isToken: false, // Normalna karta nie jest tokenem
           stats: {
             // Początkowe statystyki oparte na karcie (jeśli dostępne)
-            power: cardToPlace.basePower ? parseInt(cardToPlace.basePower) : 0,
-            toughness: cardToPlace.baseToughness
-              ? parseInt(cardToPlace.baseToughness)
-              : 0,
+            power: 0,
+            toughness: 0
           },
           counters: 0,
         };
