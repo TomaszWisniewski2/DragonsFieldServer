@@ -1191,6 +1191,90 @@ io.on("connection", (socket) => {
     }
   );
   // ------------------------------------------------------------------------------
+  const deepClone = <T>(obj: T): T => JSON.parse(JSON.stringify(obj));
+
+socket.on(
+ "cloneCard",
+ ({ code, playerId, cardId }: { code: string, playerId: string, cardId: string }) => {
+  const session = sessions[code];
+  if (!session) return;
+
+  const player = session.players.find((p) => p.id === playerId);
+  if (!player) return;
+
+  // 1. Znajdź oryginalną kartę na polu bitwy (tę, którą kliknięto)
+  const originalCardOnField = player.battlefield.find((c) => c.id === cardId);
+
+  if (!originalCardOnField) {
+   console.error(`Nie znaleziono karty do sklonowania o ID: ${cardId}`);
+   return;
+  }
+
+  // Stała bazowa ID dla wszystkich klonów tej karty
+  const baseCardLibraryId = originalCardOnField.card.id; 
+  
+  // 2. Zlicz istniejące klony (tokeny) na polu bitwy
+  // Liczymy wszystkie tokeny i oryginalną kartę (jeśli to klon, liczymy ją jako 1)
+  let cloneCount = 0;
+  player.battlefield.forEach(c => {
+   // Sprawdzamy, czy karta jest tokenem i ma to samo bazowe ID co oryginał
+   if (c.isToken === true && c.card.id === baseCardLibraryId) {
+    cloneCount++;
+   }
+  });
+    
+    // Dodajemy 1 do zliczonych klonów, ponieważ token, który chcemy sklonować, również się liczy.
+    // Jeśli zliczasz tokeny, które są klonami.
+
+    // 🌟 ALTERNATYWNE LICZENIE (bardziej logiczne):
+    // Zliczamy wszystkie tokeny BĘDĄCE klonami tej konkretnej karty bazowej.
+    // Oryginalna karta (jeśli nie jest tokenem) ma być bazą.
+    // Liczba przesunięć = liczba tokenów o tym samym baseCardLibraryId.
+    
+    // W obecnym scenariuszu, oryginalna karta (nie token) jest bazą, a klon (token) jest przesuwany.
+    // 
+    // Sprawdzamy, czy oryginalnaCardOnField to klon (isToken=true).
+    const isOriginalAToken = originalCardOnField.isToken === true;
+
+    // Zliczamy, ile tokenów (w tym potencjalnie samego originalCardOnField, jeśli jest tokenem)
+    // ma to samo bazowe ID (card.id).
+    let existingTokenClonesCount = 1;
+    player.battlefield.forEach(c => {
+        // Liczymy tylko te, które SĄ tokenami
+        if (c.isToken === true && c.card.id === baseCardLibraryId) {
+            existingTokenClonesCount++;
+        }
+    });
+
+    // Wartość przesunięcia (liczba przesunięć * stała odległość)
+  const OFFSET_INCREMENT = 20;
+  const displacement = existingTokenClonesCount * OFFSET_INCREMENT;
+    
+  // 3. Utwórz głęboką kopię obiektu CardOnField
+  const clonedCardOnField: CardOnField = deepClone(originalCardOnField);
+
+  // 4. Nadaj klonowi NOWE, unikalne ID
+  const newCardId = `token-clone-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  clonedCardOnField.id = newCardId;
+  
+  // 5. Oznacz kartę jako Token (nawet jeśli oryginał był już tokenem)
+  clonedCardOnField.isToken = true;
+
+  // 6. Ustaw klon na nowej, przesuniętej pozycji.
+  // Zawsze przesuwaj względem bazowej pozycji oryginalnej karty (tej, którą kliknięto)
+  clonedCardOnField.x = originalCardOnField.x + displacement;
+  clonedCardOnField.y = originalCardOnField.y + displacement;
+
+  // 7. Dodaj klon do pola bitwy
+  player.battlefield.push(clonedCardOnField);
+
+  console.log(`Klon tokenu utworzony dla karty ID: ${originalCardOnField.id} (Nowe ID: ${newCardId}). Przesunięcie: ${displacement}`);
+  
+  // 8. Wyślij aktualizację stanu
+  io.to(code).emit("updateState", session);
+ }
+);
+
 });
 
 const PORT = process.env.PORT || 3001;
