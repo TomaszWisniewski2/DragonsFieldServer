@@ -508,122 +508,128 @@ io.on("connection", (socket) => {
     }
   );
 
-  socket.on(
-  "moveCard",
-  (payload: {
-   code: string;
-   playerId: string;
-   from: Zone;
-   to: Zone;
-   cardId: string;
-   x?: number;
-   y?: number;
-   position?: number; // NOWE: pozycja w ręce
-  }) => {
-   const { code, playerId, from, to, cardId, x, y, position } = payload;
-   const session = sessions[code];
-   if (!session) return;
+socket.on(
+ "moveCard",
+ (payload: {
+ code: string;
+ playerId: string;
+ from: Zone;
+ to: Zone;
+ cardId: string;
+ x?: number;
+ y?: number;
+ position?: number; // pozycja w ręce
+ toBottom?: boolean; // NOWE: flaga oznaczająca wstawienie na dół biblioteki/commanderZone
+ }) => {
+ const { code, playerId, from, to, cardId, x, y, position, toBottom } = payload; // Dodano toBottom
+ const session = sessions[code];
+ if (!session) return;
 
-   const player = session.players.find((p) => p.id === playerId);
-   if (!player) return;
+ const player = session.players.find((p) => p.id === playerId);
+ if (!player) return;
 
-   // 1. OBSŁUGA PRZENO-SZENIA W OBRĘBIE POLA BITWY (DLA Z-INDEX I POZYCJI)
-   if (from === "battlefield" && to === "battlefield") {
-    const cardIndex = player.battlefield.findIndex((b) => b.id === cardId);
+ // 1. OBSŁUGA PRZENO-SZENIA W OBRĘBIE POLA BITWY (DLA Z-INDEX I POZYCJI)
+ if (from === "battlefield" && to === "battlefield") {
+  const cardIndex = player.battlefield.findIndex((b) => b.id === cardId);
 
-    if (cardIndex !== -1) {
-     // Usuwamy i przechowujemy referencję do karty
-     const [c] = player.battlefield.splice(cardIndex, 1);
+  if (cardIndex !== -1) {
+  // Usuwamy i przechowujemy referencję do karty
+  const [c] = player.battlefield.splice(cardIndex, 1);
 
-     // Aktualizacja współrzędnych
-     c.x = typeof x === "number" ? x : c.x;
-     c.y = typeof y === "number" ? y : c.y;
+  // Aktualizacja współrzędnych
+  c.x = typeof x === "number" ? x : c.x;
+  c.y = typeof y === "number" ? y : c.y;
 
-     // Dodajemy kartę z powrotem na koniec tablicy (najwyższy z-index)
-     player.battlefield.push(c);
-     io.to(code).emit("updateState", session);
-    }
-    return; // Zakończ, jeśli było to tylko przeniesienie na polu bitwy
-   }
-
-   // --- Obsługa Przenoszenia między strefami (w tym tokeny) ---
-
-   // 2. Zlokalizuj kartę w strefie źródłowej i usuń ją
-   // DODANA WALIDACJA TYPU
-   const sourceZone = player[from as keyof Player];
-
-   // Sprawdzenie, czy strefa istnieje i jest tablicą, aby uniknąć błędu "Cannot read properties of undefined"
-   if (!Array.isArray(sourceZone)) {
-    console.error(`[MOVE] Nieprawidłowa strefa źródłowa: ${from}. Otrzymano: ${sourceZone}`);
-    //socket.emit("error", `Nieprawidłowa strefa źródłowa: ${from}.`);
-    return;
-   }
-
-   // Używamy GLOBALNEJ funkcji removeFromZone
-   const card = removeFromZone(
-    sourceZone as (CardType | CardOnField)[], // Rzutowanie typu
-    cardId
-   );
-   
-   if (!card) return;
-
-   // 3. LOGIKA USUWANIA TOKENÓW 🌟
-   // Sprawdzamy, czy karta jest tokenem (tylko CardOnField może być tokenem)
-   const isTokenBeingMoved =
-    from === "battlefield" && (card as CardOnField).isToken;
-
-   if (isTokenBeingMoved && to !== "battlefield") {
-    // Token został przeniesiony do innej strefy i powinien zostać usunięty
-    console.log(`Token usunięty: ${cardId} (z ${from} do ${to})`);
-    io.to(code).emit("updateState", session);
-    return; // Zakończ, token zniknął
-   }
-   // KONIEC LOGIKI USUWANIA TOKENÓW
-
-   // 4. Przeniesienie do strefy docelowej (dla kart, które przetrwały lub nie były tokenami)
-
-   // Zwykła karta (CardType) niezależnie od tego, czy przyszła z CardOnField (card.card) czy CardType
-   const cardToMove = (card as CardOnField).card || card;
-
-   if (to === "battlefield") {
-    // Konwersja CardType na CardOnField
-    const cardToPlace = cardToMove as CardType;
-
-    const cardOnField: CardOnField = {
-     id: cardId, // Używamy oryginalnego ID (dla karty z decku będzie to ID CardType)
-     card: cardToPlace,
-     x: x ?? 50,
-     y: y ?? 50,
-     rotation: 0,
-     isFlipped: false,
-     isToken: false, // Normalna karta nie jest tokenem
-     stats: {
-      // Początkowe statystyki oparte na karcie (jeśli dostępne)
-      power: 0,
-      toughness: 0
-     },
-     counters: 0,
-    };
-    player.battlefield.push(cardOnField);
-   } else {
-    // Przeniesienie do innej strefy (Hand, Library, Graveyard, Exile, CommanderZone)
-    const targetZone = player[to as keyof Player] as CardType[];
-
-    if (to === "hand" && typeof position === "number") {
-     // Wstawiamy w konkretne miejsce w ręce
-     targetZone.splice(position, 0, cardToMove as CardType);
-    } else if (to === "library" || to === "commanderZone") {
-     // Dodaj kartę na górę (indeks 0)
-     targetZone.unshift(cardToMove as CardType);
-    } else {
-     // Standardowe zachowanie (Graveyard, Exile): dodanie na końcu
-     targetZone.push(cardToMove as CardType);
-    }
-   }
-
-   io.to(code).emit("updateState", session);
+  // Dodajemy kartę z powrotem na koniec tablicy (najwyższy z-index)
+  player.battlefield.push(c);
+  io.to(code).emit("updateState", session);
   }
+  return; // Zakończ, jeśli było to tylko przeniesienie na polu bitwy
+ }
+
+ // --- Obsługa Przenoszenia między strefami (w tym tokeny) ---
+
+ // 2. Zlokalizuj kartę w strefie źródłowej i usuń ją
+ // DODANA WALIDACJA TYPU
+ const sourceZone = player[from as keyof Player];
+
+ // Sprawdzenie, czy strefa istnieje i jest tablicą
+ if (!Array.isArray(sourceZone)) {
+  console.error(`[MOVE] Nieprawidłowa strefa źródłowa: ${from}. Otrzymano: ${sourceZone}`);
+  return;
+ }
+
+ // Używamy GLOBALNEJ funkcji removeFromZone
+ const card = removeFromZone(
+  sourceZone as (CardType | CardOnField)[], // Rzutowanie typu
+  cardId
  );
+ 
+ if (!card) return;
+
+ // 3. LOGIKA USUWANIA TOKENÓW 🌟
+ // Sprawdzamy, czy karta jest tokenem (tylko CardOnField może być tokenem)
+ const isTokenBeingMoved =
+  from === "battlefield" && (card as CardOnField).isToken;
+
+ if (isTokenBeingMoved && to !== "battlefield") {
+  // Token został przeniesiony do innej strefy i powinien zostać usunięty
+  console.log(`Token usunięty: ${cardId} (z ${from} do ${to})`);
+  io.to(code).emit("updateState", session);
+  return; // Zakończ, token zniknął
+ }
+ // KONIEC LOGIKI USUWANIA TOKENÓW
+
+ // 4. Przeniesienie do strefy docelowej (dla kart, które przetrwały lub nie były tokenami)
+
+ // Zwykła karta (CardType) niezależnie od tego, czy przyszła z CardOnField (card.card) czy CardType
+ const cardToMove = (card as CardOnField).card || card;
+
+ if (to === "battlefield") {
+  // Konwersja CardType na CardOnField
+  const cardToPlace = cardToMove as CardType;
+
+  const cardOnField: CardOnField = {
+  id: cardId, // Używamy oryginalnego ID (dla karty z decku będzie to ID CardType)
+  card: cardToPlace,
+  x: x ?? 50,
+  y: y ?? 50,
+  rotation: 0,
+  isFlipped: false,
+  isToken: false, // Normalna karta nie jest tokenem
+  stats: {
+   // Początkowe statystyki oparte na karcie (jeśli dostępne)
+   power: 0,
+   toughness: 0
+  },
+  counters: 0,
+  };
+  player.battlefield.push(cardOnField);
+ } else {
+  // Przeniesienie do innej strefy (Hand, Library, Graveyard, Exile, CommanderZone)
+  const targetZone = player[to as keyof Player] as CardType[];
+
+  if (to === "hand" && typeof position === "number") {
+  // Wstawiamy w konkretne miejsce w ręce
+  targetZone.splice(position, 0, cardToMove as CardType);
+  } else if (to === "library" || to === "commanderZone") {
+  // Obsługa Góra/Dół stosu
+  if (toBottom) {
+   // Dodaj kartę na dół stosu (koniec tablicy)
+   targetZone.push(cardToMove as CardType);
+  } else {
+   // Domyślne: Dodaj kartę na górę stosu (początek tablicy)
+   targetZone.unshift(cardToMove as CardType);
+  }
+  } else {
+  // Standardowe zachowanie (Graveyard, Exile): dodanie na końcu
+  targetZone.push(cardToMove as CardType);
+  }
+ }
+
+ io.to(code).emit("updateState", session);
+ }
+);
 
   socket.on("disconnect", () => {
     console.log("Użytkownik rozłączył się:", socket.id);
@@ -860,7 +866,8 @@ io.on("connection", (socket) => {
       }
       io.to(code).emit("updateState", session);
     }
-  ); // NOWY HANDLER: Zwiększenie licznika karty (+1)
+  ); 
+  // NOWY HANDLER: Zwiększenie licznika karty (+1)
   socket.on("increment_card_counters", ({ code, playerId, cardId }) => {
     const session = sessions[code];
     if (!session) return;
