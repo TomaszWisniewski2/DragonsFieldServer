@@ -11,7 +11,8 @@ export type Zone =
   | "battlefield"
   | "graveyard"
   | "exile"
-  | "commanderZone";
+  | "commanderZone"
+  | "sideboard";
 export type SessionType = "standard" | "commander";
 export type SortCriteria = "mana_cost" | "name" | "type_line";
 
@@ -69,6 +70,7 @@ export interface Player {
   name: string;
   life: number;
   initialDeck: CardType[];
+  initialSideboard: CardType[];
   library: CardType[];
   hand: CardType[];
   battlefield: CardOnField[];
@@ -76,6 +78,7 @@ export interface Player {
   exile: CardType[];
   commanderZone: CardType[]; //  strefa
   commander?: CardType; // opcjonalny atrybut dla karty dowódcy
+  sideboard: CardType[];
   manaPool: {
     W: number;
     U: number;
@@ -232,10 +235,12 @@ io.on("connection", (socket) => {
       code,
       playerName,
       deck,
+      sideboardCards,
     }: {
       code: string;
       playerName: string;
       deck: CardType[];
+      sideboardCards: CardType[];
     }) => {
       console.log(
         `[JOIN] Otrzymano żądanie dołączenia do sesji od gracza ${playerName}`
@@ -289,6 +294,7 @@ io.on("connection", (socket) => {
         name: playerName,
         life,
         initialDeck,
+        initialSideboard: [...sideboardCards],
         library: shuffle([...initialDeck]),
         hand: [],
         battlefield: [],
@@ -296,6 +302,7 @@ io.on("connection", (socket) => {
         exile: [],
         commanderZone,
         commander,
+        sideboard: [...sideboardCards],
         manaPool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
         counters: {
           Poison: 0,
@@ -387,7 +394,7 @@ io.on("connection", (socket) => {
           player.battlefield = [];
           player.graveyard = [];
           player.exile = []; // Resetuj exile
-
+          player.sideboard = [...player.initialSideboard];
           for (let i = 0; i < 7 && player.library.length > 0; i++) {
             const card = player.library.shift();
             if (card) player.hand.push(card);
@@ -438,7 +445,7 @@ io.on("connection", (socket) => {
       player.graveyard = [];
       player.exile = [];
       player.battlefield = [];
-
+      player.sideboard = [...player.initialSideboard];
       // KROK 4: Wypełnij bibliotekę i przetasuj.
       // Zauważ: Nie dodajemy już kart z bieżących stref (hand, graveyard, etc.)
       // Ponieważ initialDeck jest źródłem prawdy o tym, co powinno być w talii.
@@ -795,7 +802,7 @@ socket.on(
       );
     }
   });
-
+//-----------------------------------------------------------------------------------------------------------------------------
   socket.on(
     "moveAllCards",
     ({
@@ -967,7 +974,7 @@ socket.on(
         card.secondFaceBaseToughness = tempBaseToughness;
         card.secondFaceLoyalty = tempLoyalty;
         // Zmień status odwrócenia
-        cardOnField.isFlipped = !isFlipped;
+        cardOnField.isFlipped = false;
         io.to(code).emit("updateState", session);
         console.log(
           `Odwrócono kartę ${
@@ -1213,6 +1220,102 @@ socket.on(
   io.to(code).emit("updateState", session);
  }
 );
+
+
+// 🌟 NOWY HANDLER: Move Card to Battlefield Flipped
+socket.on('moveCardToBattlefieldFlipped', (data: { code: string; playerId: string; cardId: string; from: Zone }) => {
+    const { code, playerId, cardId, from } = data;
+    const session = sessions[code];
+
+    if (!session) {
+        console.warn(`moveCardToBattlefieldFlipped: Session ${code} not found.`);
+        return;
+    }
+
+    const player = session.players.find(p => p.id === playerId);
+    if (!player) {
+        console.warn(`moveCardToBattlefieldFlipped: Player ${playerId} not found in session ${code}.`);
+        return;
+    }
+
+    // Typujemy strefę źródłową jako CardType[], ponieważ karty w Hand, Library, Sideboard, etc. to CardType
+    const fromZone = player[from as keyof Player] as CardType[];
+    const cardIndex = fromZone.findIndex(card => card.id === cardId);
+
+    if (cardIndex === -1) {
+        console.warn(`moveCardToBattlefieldFlipped: Card ${cardId} not found in ${from} for player ${playerId}.`);
+        return;
+    }
+
+    // 1. Znajdź i usuń kartę z zony źródłowej
+    const cardTypeToMove: CardType = fromZone.splice(cardIndex, 1)[0];
+
+    // 2. Konwersja CardType na CardOnField i inicjalizacja stanu
+    const cardOnField: CardOnField = {
+        id: cardId, 
+        card: cardTypeToMove,
+        x: 50, // Domyślne współrzędne
+        y: 50, 
+        rotation: 0,
+        isFlipped: true, // Ustawienie na Flipped/Strona B/Facedown
+        isToken: false,
+        stats: {
+            // Modyfikatory P/T powinny być zerowane przy wejściu na pole
+            power: 0,
+            toughness: 0
+        },
+        counters: 0,
+    };
+
+    // 🌟 KLUCZOWA LOGIKA: Obsługa DFC (Double-Faced Cards) 🌟
+    if (cardTypeToMove.hasSecondFace) {
+        // Jeśli karta jest DFC, "Flipped" oznacza przejście na drugą stronę (Stronę B).
+        
+        const card = cardOnField.card;
+        
+        // --- Zapisujemy wartości Strony A w temp ---
+        const tempName = card.name;
+        const tempImage = card.image;
+        const tempManaCost = card.mana_cost;
+        const tempTypeLine = card.type_line;
+        const tempBasePower = card.basePower; // Wartość Strony A
+        const tempBaseToughness = card.baseToughness; // Wartość Strony A
+        const tempLoyalty = card.loyalty;
+
+        // --- Ustawiamy Wartości Bazowe na Stronę B ---
+        card.name = card.secondFaceName!;
+        card.image = card.secondFaceImage;
+        card.mana_cost = card.secondFaceManaCost;
+        card.type_line = card.secondFaceTypeLine;
+        card.basePower = card.secondFaceBasePower; // ✅ POPRAWKA: Ustawiamy Siłę Strony B
+        card.baseToughness = card.secondFaceBaseToughness; // ✅ POPRAWKA: Ustawiamy Wytrzymałość Strony B
+        card.loyalty = card.secondFaceLoyalty;
+
+        // --- Ustawiamy Wartości SecondFace na Stronę A (która teraz jest "drugą") ---
+        card.secondFaceName = tempName;
+        card.secondFaceImage = tempImage;
+        card.secondFaceManaCost = tempManaCost;
+        card.secondFaceTypeLine = tempTypeLine;
+        card.secondFaceBasePower = tempBasePower; // ✅ POPRAWKA: Ustawiamy Siłę Strony A (w "drugiej")
+        card.secondFaceBaseToughness = tempBaseToughness; // ✅ POPRAWKA: Ustawiamy Wytrzymałość Strony A (w "drugiej")
+        card.secondFaceLoyalty = tempLoyalty;
+
+        // isFlipped jest ustawione na true (co w tym scenariuszu oznacza Stronę B)
+        console.log(`DFC ${card.name} (${cardId}) została automatycznie odwrócona na Stronę B podczas ruchu na Battlefield.`);
+
+    } else {
+        // Dla kart jednostronnych 'isFlipped: true' oznacza Facedown (rewers).
+        console.log(`Karta jednostronna ${cardTypeToMove.name} (${cardId}) została przeniesiona na Battlefield jako Zakryta (Facedown).`);
+    }
+
+    // 3. Przenieś kartę na "battlefield"
+    player.battlefield.push(cardOnField);
+
+    // 4. Emituj zaktualizowany stan do wszystkich klientów w sesji
+    io.to(code).emit("updateState", session);
+});
+
+
 
 });
 
