@@ -226,119 +226,129 @@ function delay(ms: number) {
 }
 // ==== Socket.IO ====
 io.on("connection", (socket) => {
-  console.log("Użytkownik połączony:", socket.id);
+ console.log("Użytkownik połączony:", socket.id);
 
-  // WYSYŁAMY STATYSTYKI NATYCHMIAST PO POŁĄCZENIU
-  emitSessionStats(); // --- ZDARZENIE createSession ZOSTAŁO USUNIĘTE ---
+ // WYSYŁAMY STATYSTYKI NATYCHMIAST PO POŁĄCZENIU
+ emitSessionStats(); 
 
-  socket.on(
-    "joinSession",
-    ({
-      code,
-      playerName,
-      deck,
-      sideboardCards,
-    }: {
-      code: string;
-      playerName: string;
-      deck: CardType[];
-      sideboardCards: CardType[];
-    }) => {
-      console.log(
-        `[JOIN] Otrzymano żądanie dołączenia do sesji od gracza ${playerName}`
-      );
+ socket.on(
+  "joinSession",
+  ({
+   code,
+   playerName,
+   deck,
+   sideboardCards,
+  }: {
+   code: string;
+   playerName: string;
+   deck: CardType[];
+   sideboardCards: CardType[];
+  }) => {
+   console.log(
+    `[JOIN-REQ] Gracz ${playerName} (${socket.id}) chce dołączyć do sesji ${code}. Talia: ${deck.length}`
+   );
 
-      const session = sessions[code];
-      if (!session) {
-        socket.emit(
-          "error",
-          "Sesja o podanym kodzie nie istnieje. Możesz dołączyć tylko do STND1, STND2, CMDR1 lub CMDR2."
-        );
-        return;
-      }
+   const session = sessions[code];
+   if (!session) {
+    console.log(`[JOIN-FAIL] ${playerName}: Sesja ${code} nie istnieje.`);
+    socket.emit(
+     "error",
+     "Sesja o podanym kodzie nie istnieje. Możesz dołączyć tylko do STND1, STND2, CMDR1 lub CMDR2."
+    );
+    return;
+   }
 
-      if (session.players.some((p) => p.id === socket.id)) {
-        socket.emit("error", "Jesteś już w tej sesji.");
-        return;
-      }
+   if (session.players.some((p) => p.id === socket.id)) {
+    console.log(`[JOIN-FAIL] ${playerName}: Już jest w sesji.`);
+    socket.emit("error", "Jesteś już w tej sesji.");
+    return;
+   }
 
-      if (deck.length === 0) {
-        socket.emit(
-          "error",
-          "Talia jest pusta! Zbuduj talię w Deck Managerze."
-        );
-        return;
-      }
+   if (deck.length === 0) {
+    console.log(`[JOIN-FAIL] ${playerName}: Talia jest pusta.`);
+    socket.emit(
+     "error",
+     "Talia jest pusta! Zbuduj talię w Deck Managerze."
+    );
+    return;
+   }
 
-      let life = session.sessionType === "commander" ? 40 : 20;
-      let initialDeck = [...deck];
-      let commander: CardType | undefined;
-      let commanderZone: CardType[] = []; // Logika Commandera bazująca na TYPIE SESJI (pobranym ze stałej sesji)
+   let life = session.sessionType === "commander" ? 40 : 20;
+   let initialDeck = [...deck];
+   let commander: CardType | undefined;
+   let commanderZone: CardType[] = []; 
 
-      if (session.sessionType === "commander") {
-        const commanderCard = initialDeck.shift();
-        if (commanderCard) {
-          commander = commanderCard;
-          commanderZone = [commanderCard];
-          console.log(
-            `[JOIN] Tryb Commander. Dowódca wybrany: ${commanderCard.name}`
-          );
-        } else {
-          socket.emit(
-            "error",
-            "W trybie Commander talia musi zawierać co najmniej jedną kartę dowódcy (pierwsza karta w talii)."
-          );
-          return;
-        }
-      }
-      const player: Player = {
-        id: socket.id,
-        name: playerName,
-        life,
-        initialDeck,
-        initialSideboard: [...sideboardCards],
-        library: shuffle([...initialDeck]),
-        hand: [],
-        battlefield: [],
-        graveyard: [],
-        exile: [],
-        commanderZone,
-        commander,
-        sideboard: [...sideboardCards],
-        manaPool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
-        counters: {
-          Poison: 0,
-          Energy: 0,
-          Experience: 0,
-          Rad: 0,
-          Tickets: 0,
-          "Commander 1": 0,
-          "Commander 2": 0,
-          "Commander 3": 0,
-        },
-      }; // Dobierz 7 kart
-
-      for (let i = 0; i < 7 && player.library.length > 0; i++) {
-        const card = player.library.shift();
-        if (card) player.hand.push(card);
-      }
-
-      session.players.push(player);
-      socket.join(code); // Ustawienie aktywnego gracza, jeśli to pierwszy gracz w sesji
-
-      if (session.players.length === 1) {
-        session.activePlayer = player.id;
-        session.turn = 1;
-      }
-      io.to(code).emit("updateState", session);
-      console.log(
-        `Gracz ${playerName} dołączył do stałej sesji ${code} (${session.sessionType})`
-      );
-
-      // WYSYŁAMY ZAKTUALIZOWANE STATYSTYKI PO DOŁĄCZENIU
-      emitSessionStats();
+   if (session.sessionType === "commander") {
+    const commanderCard = initialDeck.shift(); // Pobiera i usuwa pierwszą kartę z kopii talii
+    if (commanderCard) {
+     commander = commanderCard;
+     commanderZone = [commanderCard];
+     console.log(
+      `[JOIN] Tryb Commander. Dowódca wybrany: ${commanderCard.name}. Pozostałe karty w initialDeck: ${initialDeck.length}`
+     );
+    } else {
+     // Ten warunek powinien być teoretycznie niemożliwy po sprawdzeniu deck.length === 0, 
+     // chyba że talia miała dokładnie 0 kart, ale to jest już obsłużone.
+     console.log(`[JOIN-FAIL] ${playerName}: Tryb Commander wymaga dowódcy, ale talia jest pusta po shift().`);
+     socket.emit(
+      "error",
+      "W trybie Commander talia musi zawierać co najmniej jedną kartę dowódcy (pierwsza karta w talii)."
+     );
+     return;
     }
-  ); // --- Akcje gry ---
+   }
+   
+   const player: Player = {
+    id: socket.id,
+    name: playerName,
+    life,
+    initialDeck,
+    initialSideboard: [...sideboardCards],
+    library: shuffle([...initialDeck]), // Tasujemy to, co zostało po usunięciu Commandera
+    hand: [],
+    battlefield: [],
+    graveyard: [],
+    exile: [],
+    commanderZone,
+    commander,
+    sideboard: [...sideboardCards],
+    manaPool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
+    counters: {
+     Poison: 0,
+     Energy: 0,
+     Experience: 0,
+     Rad: 0,
+     Tickets: 0,
+     "Commander 1": 0,
+     "Commander 2": 0,
+     "Commander 3": 0,
+    },
+   }; 
+      
+      // Dobieranie 7 kart
+   for (let i = 0; i < 7 && player.library.length > 0; i++) {
+    const card = player.library.shift();
+    if (card) player.hand.push(card);
+   }
+
+   session.players.push(player);
+   socket.join(code); 
+
+   if (session.players.length === 1) {
+    session.activePlayer = player.id;
+    session.turn = 1;
+   }
+   
+      // WYSŁANIE ZAKTUALIZOWANEGO STANU
+   io.to(code).emit("updateState", session);
+   console.log(
+    `[JOIN-SUCCESS] Gracz ${playerName} dołączył do sesji ${code} (${session.sessionType}). Gracze w sesji: ${session.players.length}`
+   );
+
+   // WYSYŁAMY ZAKTUALIZOWANE STATYSTYKI PO DOŁĄCZENIU
+   emitSessionStats();
+  }
+ ); // --- Akcje gry ---
   socket.on(
     "startGame",
     ({ code, sessionType }: { code: string; sessionType?: SessionType }) => {
