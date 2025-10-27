@@ -3,8 +3,7 @@ import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
 
-// ==== Typy (powinny być zsynchronizowane z useSocket.ts) ====
-// Zaktualizowano Zone, aby zawierała commanderZone
+// ==== Typy (zsynchronizowane z useSocket.ts) ====
 export type Zone =
   | "hand"
   | "library"
@@ -26,8 +25,7 @@ export interface CardType {
   basePower?: string | null;
   baseToughness?: string | null;
   loyalty?: number | null;
-
-  hasSecondFace?: boolean; // Flaga ułatwiająca sprawdzenie, czy karta ma drugą stronę
+  hasSecondFace?: boolean;
   secondFaceName?: string;
   secondFaceImage?: string;
   secondFaceManaCost?: string;
@@ -36,7 +34,6 @@ export interface CardType {
   secondFaceBasePower?: string | null;
   secondFaceBaseToughness?: string | null;
   secondFaceLoyalty?: number | null;
-
   tokens?: TokenData[];
 }
 
@@ -76,8 +73,8 @@ export interface Player {
   battlefield: CardOnField[];
   graveyard: CardType[];
   exile: CardType[];
-  commanderZone: CardType[]; //  strefa
-  commander?: CardType; // opcjonalny atrybut dla karty dowódcy
+  commanderZone: CardType[];
+  commander?: CardType;
   sideboard: CardType[];
   manaPool: {
     W: number;
@@ -98,21 +95,16 @@ export interface Session {
   sessionType: SessionType;
 }
 
-// ==== Setup serwera ====
+// ==== Serwer Express + Socket.IO ====
 const app = express();
 app.use(cors());
-
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
+  cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-// ==== Stałe sesje i ich inicjalizacja ====
+// ==== Stałe sesje ====
 const sessions: Record<string, Session> = {};
-
 const initialSessions: { code: string; sessionType: SessionType }[] = [
   { code: "STND1", sessionType: "standard" },
   { code: "STND2", sessionType: "standard" },
@@ -121,85 +113,11 @@ const initialSessions: { code: string; sessionType: SessionType }[] = [
 ];
 
 initialSessions.forEach(({ code, sessionType }) => {
-  sessions[code] = {
-    code,
-    players: [],
-    turn: 0,
-    activePlayer: "",
-    sessionType,
-  };
-  console.log(`Zainicjowano stałą sesję: ${code} (${sessionType})`);
+  sessions[code] = { code, players: [], turn: 0, activePlayer: "", sessionType };
+  console.log(`Zainicjowano sesję: ${code} (${sessionType})`);
 });
 
-// ==== LOGIKA SORTOWANIA (NOWA FUNKCJA POMOCNICZA) ====
-// --------------------------------------------------------------------------------------------------
-function sortCards(hand: CardType[], criteria: SortCriteria): CardType[] {
-  // Kopia tablicy, aby nie modyfikować jej bezpośrednio w trakcie sortowania
-  const sortedHand = [...hand];
-
-  sortedHand.sort((a, b) => {
-    let valA: string | number | undefined;
-    let valB: string | number | undefined;
-
-    switch (criteria) {
-      case "mana_cost":
-        // Dla mana_cost używamy długości stringa jako prostej metryki sortowania
-        // Można to ulepszyć, używając biblioteki do parsowania kosztu many (np. manacost-to-cmc)
-        // lub sortując alfabetycznie, co daje przyzwoity efekt.
-        valA = a.mana_value || "";
-        valB = b.mana_value || "";
-
-        // Sortowanie alfabetyczne po stringu (dla efektu 'zwykłego' sortowania po cenie)
-        if (valA < valB) return -1;
-        if (valA > valB) return 1;
-        return 0;
-
-      case "name":
-        valA = a.name.toLowerCase();
-        valB = b.name.toLowerCase();
-        if (valA < valB) return -1;
-        if (valA > valB) return 1;
-        return 0;
-
-      case "type_line":
-        // W Magic The Gathering zazwyczaj sortuje się po typie w kolejności:
-        // Landy, Kreatury, Sorcery, Instants, Artefakty, Enchantmenty.
-        // Tutaj używamy prostego sortowania alfabetycznego po Type Line.
-        valA = a.type_line?.toLowerCase() || "";
-        valB = b.type_line?.toLowerCase() || "";
-        if (valA < valB) return -1;
-        if (valA > valB) return 1;
-        return 0;
-
-      default:
-        return 0; // Brak sortowania
-    }
-  });
-
-  return sortedHand;
-}
-// ----------------------
-// ===========================================
-
-// --------------------------------------------------------------------------------------------------
-// ==== LOGIKA STATYSTYK SESJI (NOWA SEKCJA) ====
-// --------------------------------------------------------------------------------------------------
-function getSessionStats() {
-  const stats: Record<string, number> = {};
-  for (const code in sessions) {
-    stats[code] = sessions[code].players.length;
-  }
-  return stats;
-}
-
-function emitSessionStats() {
-  const stats = getSessionStats();
-  // Wysyłamy statystyki do WSZYSTKICH podłączonych klientów
-  io.emit("updateSessionStats", stats);
-  // console.log("[STATS] Wysłano statystyki sesji:", stats); // Odkomentuj do debugowania
-}
-// --------------------------------------------------------------------------------------------------
-
+// ==== Funkcje pomocnicze ====
 function shuffle<T>(array: T[]): T[] {
   const result = [...array];
   for (let i = result.length - 1; i > 0; i--) {
@@ -209,13 +127,60 @@ function shuffle<T>(array: T[]): T[] {
   return result;
 }
 
-
 function getRandomInt(max: number): number {
   return Math.floor(Math.random() * max);
 }
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function sortCards(hand: CardType[], criteria: SortCriteria): CardType[] {
+  const sortedHand = [...hand];
+  sortedHand.sort((a, b) => {
+    let valA: string | number | undefined;
+    let valB: string | number | undefined;
+    switch (criteria) {
+      case "mana_cost":
+        valA = a.mana_value || 0;
+        valB = b.mana_value || 0;
+        return (valA as number) - (valB as number);
+      case "name":
+        valA = a.name.toLowerCase();
+        valB = b.name.toLowerCase();
+        if (valA < valB) return -1;
+        if (valA > valB) return 1;
+        return 0;
+      case "type_line":
+        valA = a.type_line?.toLowerCase() || "";
+        valB = b.type_line?.toLowerCase() || "";
+        if (valA < valB) return -1;
+        if (valA > valB) return 1;
+        return 0;
+      default:
+        return 0;
+    }
+  });
+  return sortedHand;
+}
+
+function getSessionStats() {
+  const stats: Record<string, number> = {};
+  for (const code in sessions) {
+    stats[code] = sessions[code].players.length;
+  }
+  return stats;
+}
+
+function emitSessionStats() {
+  io.emit("updateSessionStats", getSessionStats());
+}
+
+function isCardOnField(card: CardType | CardOnField): card is CardOnField {
+  return (card as CardOnField).card !== undefined;
+}
+
+const deepClone = <T>(obj: T): T => JSON.parse(JSON.stringify(obj));
 // ==== Socket.IO ====
 io.on("connection", (socket) => {
  console.log("Użytkownik połączony:", socket.id);
