@@ -523,14 +523,33 @@ socket.on(
         cardId,
         x,
         y,
-        position,
+        position, // Parametr nieużywany w poniższej logice, ale zachowany
         toBottom, // Opcjonalny parametr
+    }: {
+        code: string;
+        playerId: string;
+        from: Zone;
+        to: Zone;
+        cardId: string;
+        x?: number;
+        y?: number;
+        position?: number;
+        toBottom?: boolean;
     }) => {
         const session = sessions[code];
         if (!session) return;
 
         const player = session.players.find((p) => p.id === playerId);
         if (!player) return;
+
+        // 🟢 WALIDACJA (Poprawka błędu 'Nieprawidłowa strefa źródłowa: . Otrzymano: undefined')
+        if (!from || typeof from !== 'string' || !player.hasOwnProperty(from)) {
+            console.error(
+                `[MOVE-FAIL] BŁĄD WALIDACJI: 'from' jest nieprawidłowe lub puste. Otrzymano: ${from}`
+            );
+            socket.emit("error", "Nie można przenieść karty: brakuje strefy źródłowej lub jest nieprawidłowa.");
+            return;
+        }
 
         // 1. Walidacja tokenów (tokeny są usuwane, jeśli opuszczają pole bitwy)
         if (from === "battlefield" && to !== "battlefield") {
@@ -554,13 +573,17 @@ socket.on(
         }
 
         // 2. Zlokalizuj kartę w strefie źródłowej i usuń ją
+        // Użycie `from as keyof Player` z nową walidacją jest bezpieczne, 
+        // a TypeScripcie jest to rzutowanie, aby uzyskać dostęp do właściwości gracza.
         const sourceZone = player[from as keyof Player] as
             | CardType[]
             | CardOnField[];
 
         if (!Array.isArray(sourceZone)) {
+            // Ten błąd powinien być już minimalny dzięki walidacji powyżej, 
+            // ale jest to dodatkowe zabezpieczenie, jeśli `from` wskazuje na nie-tablicową właściwość (np. 'name' lub 'life')
             console.error(
-                `[MOVE] Nieprawidłowa strefa źródłowa: ${from}. Otrzymano: ${sourceZone}`
+                `[MOVE] Nieprawidłowa strefa źródłowa (nie-tablicowa): ${from}. Otrzymano: ${sourceZone}`
             );
             return;
         }
@@ -582,7 +605,7 @@ socket.on(
         // ✅ KROK 3: WYCIĄGNIĘCIE CZYSTEGO CardType I ZACHOWANIE STANU POLA BITWY
         let pureCardType: CardType;
         // ZMIANA: Przechwytujemy stan CardOnField, jeśli karta pochodzi z pola bitwy
-        let originalCardOnField: CardOnField | null = null; 
+        let originalCardOnField: CardOnField | null = null;
 
         if (isCardOnField(cardUnionType)) {
             // Jeśli karta pochodziła z pola bitwy (jest CardOnField), wyciągnij bazowy CardType i zachowaj stan
@@ -605,8 +628,9 @@ socket.on(
                 rotation: originalCardOnField?.rotation ?? 0,
                 isFlipped: originalCardOnField?.isFlipped ?? false,
                 isToken: originalCardOnField?.isToken ?? false, // KLUCZOWA ZMIANA: Zachowujemy isToken
-                stats: originalCardOnField?.stats ?? { power: 0, toughness: 0 },
-                counters: originalCardOnField?.counters ?? 0,
+                // Resetujemy statystyki i liczniki, jeśli karta jest przenoszona Z INNEJ strefy
+                stats: from === "battlefield" ? originalCardOnField!.stats : { power: 0, toughness: 0 },
+                counters: from === "battlefield" ? originalCardOnField!.counters : 0,
             };
             player.battlefield.push(cardOnField);
         } else {
