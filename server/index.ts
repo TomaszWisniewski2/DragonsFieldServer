@@ -285,10 +285,10 @@ io.on("connection", (socket) => {
     }; 
     
     // Dobieranie 7 kart
-    for (let i = 0; i < 7 && player.library.length > 0; i++) {
-      const card = player.library.shift();
-      if (card) player.hand.push(card);
-    }
+    // for (let i = 0; i < 7 && player.library.length > 0; i++) {
+    //   const card = player.library.shift();
+    //   if (card) player.hand.push(card);
+    // }
 
     session.players.push(player);
     socket.join(code); 
