@@ -195,11 +195,13 @@ io.on("connection", (socket) => {
     playerName,
     deck, // PEŁNA talia (w tym Dowódca na pierwszej pozycji w trybie Commander)
     sideboardCards,
+    commanderCard,
   }: {
     code: string;
     playerName: string;
     deck: CardType[];
     sideboardCards: CardType[];
+    commanderCard?: CardType[] | null;
   }) => {
     console.log(
       `[JOIN-REQ] Gracz ${playerName} (${socket.id}) chce dołączyć do sesji ${code}. Talia: ${deck.length}`
@@ -232,44 +234,68 @@ io.on("connection", (socket) => {
 
     let life = session.sessionType === "commander" ? 40 : 20;
     
-    // Używamy KOPII talii, którą będziemy modyfikować (usuwamy Dowódcę)
-    let libraryForShuffle: CardType[] = [...deck]; 
-    let commander: CardType | undefined;
-    let commanderZone: CardType[] = [];
+// ⚠️ ZMODYFIKOWANA LOGIKA INICJALIZACJI TALII/COMMANDERA
+      let libraryForShuffle: CardType[] = [...deck];
+      let commanders: CardType[] = commanderCard || []; 
+      let commanderZone: CardType[] = [];
 
-    if (session.sessionType === "commander") {
-      // Pobiera i usuwa pierwszą kartę z KOPII talii (libraryForShuffle)
-      const commanderCard = libraryForShuffle.shift(); 
+if (session.sessionType === "commander") {
+      if (commanders.length > 0) {
+        let cardsRemoved = 0;
+        
+        // Przechodzimy przez KAŻDEGO dowódcę
+        commanders.forEach((commander) => {
+          const commanderIndex = libraryForShuffle.findIndex(
+            (card) => card.id === commander.id
+          );
 
-      if (commanderCard) {
-        commander = commanderCard;
-        commanderZone = [commanderCard];
+          if (commanderIndex > -1) {
+            libraryForShuffle.splice(commanderIndex, 1); // Usuń Dowódcę z biblioteki
+            cardsRemoved++;
+          }
+        });
+        
+        commanderZone = [...commanders]; // Wszyscy dowódcy idą do strefy
+        
         console.log(
-          `[JOIN] Tryb Commander. Dowódca wybrany: ${commanderCard.name}. Karty w bibliotece do tasowania: ${libraryForShuffle.length}`
+          `[JOIN] Tryb Commander. Wybrano ${commanders.length} Dowódców. Usunięto z talii do tasowania: ${cardsRemoved}. Karty w bibliotece do tasowania: ${libraryForShuffle.length}`
         );
+
       } else {
-        console.log(`[JOIN-FAIL] ${playerName}: Tryb Commander wymaga dowódcy, ale talia jest pusta po shift().`);
+        console.log(`[JOIN-FAIL] ${playerName}: Tryb Commander wymaga co najmniej jednego dowódcy.`);
         socket.emit(
           "error",
-          "W trybie Commander talia musi zawierać co najmniej jedną kartę dowódcy (pierwsza karta w talii)."
+          "W trybie Commander talia musi zawierać co najmniej jedną kartę dowódcy."
         );
         return;
       }
+    } else {
+      commanders = []; // Upewnij się, że commanders jest puste w trybie Standard
+      commanderZone = [];
     }
+      // ----------------------------------------------------
     
-    const player: Player = {
+const player: Player = {
       id: socket.id,
       name: playerName,
       life,
-      initialDeck: [...deck], // 🟢 POPRAWKA: ZAWSZE PEŁNA TALIA
+      initialDeck: [...deck], // ZAWSZE PEŁNA TALIA
       initialSideboard: [...sideboardCards],
-      library: shuffle(libraryForShuffle), // Biblioteka ZAWSZE jest potasowana i bez dowódcy (jeśli Commander)
+      library: shuffle(libraryForShuffle), // Biblioteka potasowana i bez dowódców
       hand: [],
       battlefield: [],
       graveyard: [],
       exile: [],
-      commanderZone, // Dowódca lub pusta
-      commander, // Karta Dowódcy lub undefined
+      commanderZone, // Lista dowódców lub pusta
+      // 🟢 ZMIANA: Zapisujemy listę dowódców (jeśli typ Player został zmieniony na 'commanders: CardType[]')
+      // Jeśli typ Player MUSI zostać 'commander: CardType | undefined', to poniżej jest problem z logiką
+      // Zakładam, że zmienisz Player na:
+      // commanders: CardType[];
+      // Aby kod poniżej działał:
+      // commanders: commanders, // <-- Zastępuje pole 'commander'
+      // 
+      // Jeśli TYM RAZEM musimy ZACHOWAĆ pole 'commander' dla pojedynczego dowódcy, użyjemy pierwszego elementu:
+      commander: commanders.length > 0 ? commanders[0] : undefined, // Zachowanie starego pola dla kompatybilności, jeśli to możliwe
       sideboard: [...sideboardCards],
       manaPool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
       counters: {
@@ -311,12 +337,11 @@ io.on("connection", (socket) => {
  
  
  // --- Akcje gry ---
-  socket.on(
+socket.on(
     "startGame",
     ({ code, sessionType }: { code: string; sessionType?: SessionType }) => {
       const session = sessions[code];
       if (session) {
-        // Używamy typu sesji ustawionego przy inicjalizacji, a nie przekazanego z klienta
         const currentSessionType = session.sessionType;
 
         session.players.forEach((player) => {
@@ -327,66 +352,81 @@ io.on("connection", (socket) => {
             );
             return;
           }
+          
+          // KROK 1: Resetuj strefy i życie
           player.life = currentSessionType === "commander" ? 40 : 20;
-          let deckToShuffle = [...player.initialDeck];
-          let commanderCard: CardType | undefined = player.commander; // Zacznij od obecnego dowódcy
-
-          if (currentSessionType === "commander") {
-            if (!player.commander) {
-              // JEŚLI DOWÓDCA NIE BYŁ JESZCZE USTAWIONY
-              // Ustawienie dowódcy po raz pierwszy (jak w oryginalnym kodzie)
-              commanderCard = deckToShuffle.shift();
-
-              if (commanderCard) {
-                player.commander = commanderCard;
-                player.commanderZone = [commanderCard];
-              } else {
-                socket.emit(
-                  "error",
-                  `Commander card not found for player ${player.name}.`
-                );
-                return; // Zakończenie inicjalizacji gracza
-              }
-            } else {
-              // Dowódca już jest, upewnij się, że nie jest w talii do potasowania
-              // Usuń kartę dowódcy z talii do potasowania (może być potrzebne, jeśli initialDeck zawiera dowódcę)
-              const commanderIndex = deckToShuffle.findIndex(
-                (card) => card.id === player.commander!.id
-              );
-              if (commanderIndex > -1) {
-                deckToShuffle.splice(commanderIndex, 1);
-              }
-              player.commanderZone = [player.commander!]; // Ustaw go w strefie
-            }
-          } else {
-            // Tryb inny niż Commander
-            player.commander = undefined;
-            player.commanderZone = [];
-          }
-          player.library = shuffle(deckToShuffle);
           player.hand = [];
           player.battlefield = [];
           player.graveyard = [];
-          player.exile = []; // Resetuj exile
+          player.exile = [];
           player.sideboard = [...player.initialSideboard];
+          player.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 }; // Uzupełnienie: reset puli many
+
+          // KROK 2: Przygotuj PEŁNĄ talię do tasowania
+          let deckToShuffle = [...player.initialDeck];
+          
+          // KROK 3: Obsługa Dowódców (usuwamy Dowódców z talii do tasowania)
+          if (currentSessionType === "commander") {
+            
+            // Lista Dowódców, którzy mają być w strefie
+            const commandersToZone = player.commanderZone.length > 0 
+              ? player.commanderZone 
+              : []; // Jeśli z jakiegoś powodu pusta (błąd klienta)
+
+            if (commandersToZone.length === 0) {
+              socket.emit(
+                "error",
+                `W trybie Commander musisz mieć dowódcę ustawionego dla gracza ${player.name}.`
+              );
+              return; 
+            }
+            
+            // Usuń Dowódców z talii do tasowania (sprawdzamy po ID)
+            commandersToZone.forEach(commander => {
+                const commanderIndex = deckToShuffle.findIndex(
+                    (card) => card.id === commander.id
+                );
+                if (commanderIndex > -1) {
+                    deckToShuffle.splice(commanderIndex, 1);
+                }
+            });
+
+            // Ustaw Dowódców w strefie dowódcy (z powrotem tam, gdzie byli)
+            player.commanderZone = commandersToZone;
+
+          } else {
+            // Tryb Standard: strefa Dowódcy pusta
+            player.commanderZone = [];
+          }
+          
+          // KROK 4: Tasowanie i dociąganie
+          player.library = shuffle(deckToShuffle);
+          
           for (let i = 0; i < 7 && player.library.length > 0; i++) {
             const card = player.library.shift();
             if (card) player.hand.push(card);
           }
+          
+          // Uzupełnienie: Reset liczników gracza
+          player.counters = {
+            Poison: 0, Energy: 0, Experience: 0, Rad: 0, Tickets: 0,
+            "Commander 1": 0, "Commander 2": 0, "Commander 3": 0, 
+          };
         });
+        
         const randomPlayerIndex = Math.floor(
           Math.random() * session.players.length
         );
         session.turn = 1;
         session.activePlayer = session.players[randomPlayerIndex].id;
-        session.sessionType = currentSessionType; // Wymuś typ stałej sesji
+        session.sessionType = currentSessionType;
         io.to(code).emit("updateState", session);
         console.log(
           `Gra w sesji ${code} została rozpoczęta. Tryb: ${currentSessionType}`
         );
       }
     }
-  );
+);
 
 socket.on(
   "resetPlayer",
@@ -403,37 +443,43 @@ socket.on(
     let fullDeckForShuffle = [...player.initialDeck];
     const currentSessionType = session.sessionType;
 
-    // KROK 2: Obsługa dowódcy w formacie Commander
-    if (currentSessionType === "commander" && player.commander) {
-      player.commanderZone = [player.commander];
-
-      // ⚠️ Ważne: usuń Dowódcę z talii PRZED tasowaniem
-      const commanderIndex = fullDeckForShuffle.findIndex(
-        (card) => card.id === player.commander!.id
-      );
-
-      if (commanderIndex > -1) {
-        fullDeckForShuffle.splice(commanderIndex, 1);
-        console.log(`[RESET] Usunięto dowódcę ${player.commander!.name} z talii do tasowania.`);
-      }
-      
-    } else {
-      player.commanderZone = [];
-    }
-
-    // KROK 3: Reset życia i pozostałych stref.
+    // KROK 2: Reset życia i pozostałych stref
     player.life = currentSessionType === "commander" ? 40 : 20;
-
     player.hand = [];
     player.graveyard = [];
     player.exile = [];
     player.battlefield = [];
     player.sideboard = [...player.initialSideboard];
     player.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
-    player.counters = { // Resetujemy też liczniki gracza
+    player.counters = { 
         Poison: 0, Energy: 0, Experience: 0, Rad: 0, Tickets: 0,
         "Commander 1": 0, "Commander 2": 0, "Commander 3": 0,
     };
+
+    // KROK 3: Obsługa Dowódcy (usuwamy Dowódców z talii do tasowania)
+    if (currentSessionType === "commander" && player.commanderZone.length > 0) {
+        
+        // Lista Dowódców, którzy mają być w strefie
+        const commandersToZone = player.commanderZone; 
+        
+        // Usuń Dowódców z talii PRZED tasowaniem
+        commandersToZone.forEach(commander => {
+            const commanderIndex = fullDeckForShuffle.findIndex(
+                (card) => card.id === commander.id
+            );
+            
+            if (commanderIndex > -1) {
+                fullDeckForShuffle.splice(commanderIndex, 1);
+                console.log(`[RESET] Usunięto dowódcę ${commander.name} z talii do tasowania.`);
+            }
+        });
+        
+        // Ustaw Dowódców w strefie dowódcy
+        player.commanderZone = commandersToZone;
+
+    } else {
+        player.commanderZone = [];
+    }
 
     // KROK 4: Wypełnij bibliotekę i przetasuj.
     player.library = shuffle(fullDeckForShuffle);
@@ -662,11 +708,17 @@ socket.on(
                     );
                 }
             } else if (
+                to === "commanderZone"
+            ) {
+                // Dodaj na koniec (najnowsza karta/góra stosu)
+                destinationZone.unshift(pureCardType);
+            }
+            else if (
                 to === "hand" ||
                 to === "graveyard" ||
                 to === "exile" ||
-                to === "sideboard" ||
-                to === "commanderZone"
+                to === "sideboard" //||
+                //to === "commanderZone"
             ) {
                 // Dodaj na koniec (najnowsza karta/góra stosu)
                 destinationZone.push(pureCardType);
