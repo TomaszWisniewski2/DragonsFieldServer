@@ -74,7 +74,7 @@ export interface Player {
   graveyard: CardType[];
   exile: CardType[];
   commanderZone: CardType[];
-  commander?: CardType;
+  commanders?: CardType[];
   sideboard: CardType[];
   manaPool: {
     W: number;
@@ -287,16 +287,8 @@ const player: Player = {
       graveyard: [],
       exile: [],
       commanderZone, // Lista dowódców lub pusta
-      // 🟢 ZMIANA: Zapisujemy listę dowódców (jeśli typ Player został zmieniony na 'commanders: CardType[]')
-      // Jeśli typ Player MUSI zostać 'commander: CardType | undefined', to poniżej jest problem z logiką
-      // Zakładam, że zmienisz Player na:
-      // commanders: CardType[];
-      // Aby kod poniżej działał:
-      // commanders: commanders, // <-- Zastępuje pole 'commander'
-      // 
-      // Jeśli TYM RAZEM musimy ZACHOWAĆ pole 'commander' dla pojedynczego dowódcy, użyjemy pierwszego elementu:
-      commander: commanders.length > 0 ? commanders[0] : undefined, // Zachowanie starego pola dla kompatybilności, jeśli to możliwe
       sideboard: [...sideboardCards],
+      commanders: [...commanders],
       manaPool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
       counters: {
         Poison: 0,
@@ -308,13 +300,9 @@ const player: Player = {
         "Commander 2": 0,
         "Commander 3": 0,
       },
+
     }; 
     
-    // Dobieranie 7 kart
-    // for (let i = 0; i < 7 && player.library.length > 0; i++) {
-    //   const card = player.library.shift();
-    //   if (card) player.hand.push(card);
-    // }
 
     session.players.push(player);
     socket.join(code); 
@@ -353,6 +341,7 @@ socket.on(
             return;
           }
           
+          let commanders: CardType[] = player.commanders || []; 
           // KROK 1: Resetuj strefy i życie
           player.life = currentSessionType === "commander" ? 40 : 20;
           player.hand = [];
@@ -361,7 +350,7 @@ socket.on(
           player.exile = [];
           player.sideboard = [...player.initialSideboard];
           player.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 }; // Uzupełnienie: reset puli many
-
+          player.commanderZone =[...commanders]
           // KROK 2: Przygotuj PEŁNĄ talię do tasowania
           let deckToShuffle = [...player.initialDeck];
           
@@ -442,7 +431,7 @@ socket.on(
     // KROK 1: Użyj bazowej talii (PEŁNEJ) do resetu.
     let fullDeckForShuffle = [...player.initialDeck];
     const currentSessionType = session.sessionType;
-
+    let commanders: CardType[] = player.commanders || []; 
     // KROK 2: Reset życia i pozostałych stref
     player.life = currentSessionType === "commander" ? 40 : 20;
     player.hand = [];
@@ -455,7 +444,7 @@ socket.on(
         Poison: 0, Energy: 0, Experience: 0, Rad: 0, Tickets: 0,
         "Commander 1": 0, "Commander 2": 0, "Commander 3": 0,
     };
-
+    player.commanderZone =[...commanders]
     // KROK 3: Obsługa Dowódcy (usuwamy Dowódców z talii do tasowania)
     if (currentSessionType === "commander" && player.commanderZone.length > 0) {
         
@@ -559,9 +548,13 @@ socket.on(
     // Najbezpieczniej jest jednak sprawdzać pole 'card'
     return (card as CardOnField).card !== undefined;
   }
+
+  //--------------------------------------------------------------------------------
+
 socket.on(
     "moveCard",
-    ({
+    // 💡 Dodajemy 'async' do funkcji zwrotnej, aby umożliwić asynchroniczne try-catch
+    async ({
         code,
         playerId,
         from,
@@ -569,8 +562,8 @@ socket.on(
         cardId,
         x,
         y,
-        position, // obecnie nieużywany, zachowany na przyszłość
-        toBottom, // opcjonalny parametr dla biblioteki
+        position, // Parametr nieużywany w poniższej logice, ale zachowany
+        toBottom, // Opcjonalny parametr
     }: {
         code: string;
         playerId: string;
@@ -582,151 +575,171 @@ socket.on(
         position?: number;
         toBottom?: boolean;
     }) => {
-        const session = sessions[code];
-        if (!session) return;
+        try {
+            const session = sessions[code];
+            if (!session) return;
 
-        const player = session.players.find((p) => p.id === playerId);
-        if (!player) return;
+            const player = session.players.find((p) => p.id === playerId);
+            if (!player) return;
+            await delay(1); // Symulacja dostępu I/O
+            // 🟢 WALIDACJA (Poprawka błędu 'Nieprawidłowa strefa źródłowa: . Otrzymano: undefined')
+            if (!from || typeof from !== 'string' || !player.hasOwnProperty(from)) {
+                console.error(
+                    `[MOVE-FAIL] BŁĄD WALIDACJI: 'from' jest nieprawidłowe lub puste. Otrzymano: ${from}`
+                );
+                socket.emit("error", "Nie można przenieść karty: brakuje strefy źródłowej lub jest nieprawidłowa.");
+                return;
+            }
 
-        // 🧩 Walidacja stref
-        if (!from || typeof from !== "string" || !(from in player)) {
-            console.error(`[MOVE-FAIL] Nieprawidłowa strefa źródłowa: ${from}`);
-            socket.emit(
-                "error",
-                `Nie można przenieść karty: nieprawidłowa strefa źródłowa (${from}).`
-            );
-            return;
-        }
+            // 1. Walidacja tokenów (tokeny są usuwane, jeśli opuszczają pole bitwy)
+            if (from === "battlefield" && to !== "battlefield") {
+                const cardIndex = player.battlefield.findIndex((c) => c.id === cardId);
 
-        if (!to || typeof to !== "string" || !(to in player)) {
-            console.error(`[MOVE-FAIL] Nieprawidłowa strefa docelowa: ${to}`);
-            socket.emit(
-                "error",
-                `Nie można przenieść karty: nieprawidłowa strefa docelowa (${to}).`
-            );
-            return;
-        }
+                if (cardIndex === -1) {
+                    console.warn(`[MOVE] Karta ${cardId} nie znaleziona na polu bitwy.`);
+                    return;
+                }
+                const cardToMove = player.battlefield[cardIndex];
 
-        // 🪶 Tokeny — jeśli schodzą z pola bitwy, są usuwane
-        if (from === "battlefield" && to !== "battlefield") {
-            const battlefieldCardIndex = player.battlefield.findIndex(
-                (c) => c.id === cardId
-            );
-
-            if (battlefieldCardIndex !== -1) {
-                const cardOnField = player.battlefield[battlefieldCardIndex];
-                if (cardOnField.isToken) {
-                    player.battlefield.splice(battlefieldCardIndex, 1);
+                // Jeśli przenoszona karta jest tokenem, usuń ją (tokeny nie idą do grobu/ręki)
+                if (cardToMove.isToken === true) {
+                    player.battlefield.splice(cardIndex, 1);
                     console.log(
-                        `[MOVE] Token ${cardId} usunięty z pola bitwy (do ${to}).`
+                        `[MOVE] Token ${cardId} z pola bitwy został usunięty (do ${to}).`
                     );
                     io.to(code).emit("updateState", session);
                     return;
                 }
             }
-        }
 
-        // 🔎 Pobierz źródło
-        const sourceZone = player[from as keyof Player] as
-            | CardType[]
-            | CardOnField[];
-        if (!Array.isArray(sourceZone)) {
-            console.error(`[MOVE] Strefa źródłowa ${from} nie jest tablicą.`);
-            return;
-        }
+            // 2. Zlokalizuj kartę w strefie źródłowej i usuń ją
+            // Użycie `from as keyof Player` z nową walidacją jest bezpieczne, 
+            // a TypeScripcie jest to rzutowanie, aby uzyskać dostęp do właściwości gracza.
+            const sourceZone = player[from as keyof Player] as
+                | CardType[]
+                | CardOnField[];
 
-        const cardIndex = sourceZone.findIndex((c: any) => c.id === cardId);
-
-        if (cardIndex === -1) {
-            const msg = `[MOVE] Karta ${cardId} nie znaleziona w strefie ${from}.`;
-            console.error(msg);
-            socket.emit("error", msg);
-            socket.emit("updateState", session);
-            return;
-        }
-
-        const [removedCard] = sourceZone.splice(cardIndex, 1);
-
-        // 🧠 Zachowaj dane karty
-        let pureCard: CardType;
-        let originalOnField: CardOnField | null = null;
-
-        if (isCardOnField(removedCard)) {
-            pureCard = removedCard.card;
-            originalOnField = removedCard;
-        } else {
-            pureCard = removedCard;
-        }
-
-        // 🎯 Przeniesienie do pola bitwy
-        if (to === "battlefield") {
-            const newCardOnField: CardOnField = {
-                id: cardId,
-                card: pureCard,
-                x: x ?? originalOnField?.x ?? 50,
-                y: y ?? originalOnField?.y ?? 50,
-                rotation: originalOnField?.rotation ?? 0,
-                isFlipped: originalOnField?.isFlipped ?? false,
-                isToken: originalOnField?.isToken ?? false,
-                stats:
-                    from === "battlefield"
-                        ? originalOnField!.stats
-                        : { power: 0, toughness: 0 },
-                counters:
-                    from === "battlefield"
-                        ? originalOnField!.counters
-                        : 0,
-            };
-            player.battlefield.push(newCardOnField);
-        } else {
-            // 🎯 Przeniesienie do innej strefy
-            const destinationZone = player[to as keyof Player] as CardType[];
-            if (!Array.isArray(destinationZone)) {
-                console.error(`[MOVE] Nieprawidłowa strefa docelowa: ${to}`);
-                sourceZone.push(pureCard as any); // zwróć kartę, aby nie zginęła
+            if (!Array.isArray(sourceZone)) {
+                // Ten błąd powinien być już minimalny dzięki walidacji powyżej, 
+                // ale jest to dodatkowe zabezpieczenie, jeśli `from` wskazuje na nie-tablicową właściwość (np. 'name' lub 'life')
+                console.error(
+                    `[MOVE] Nieprawidłowa strefa źródłowa (nie-tablicowa): ${from}. Otrzymano: ${sourceZone}`
+                );
+                // Nie emitujemy błędu do użytkownika, bo jest to wewnętrzny błąd kodu.
                 return;
             }
 
-            switch (to) {
-                case "library":
+            const cardIndex = sourceZone.findIndex(
+                (card: CardType | CardOnField) => card.id === cardId
+            );
+
+            if (cardIndex === -1) {
+                console.warn(
+                    `[MOVE] Karta ${cardId} nie znaleziona w strefie źródłowej ${from}.`
+                );
+                return;
+            }
+
+            // Usuń kartę ze strefy źródłowej
+            const [cardUnionType] = sourceZone.splice(cardIndex, 1);
+
+            // ✅ KROK 3: WYCIĄGNIĘCIE CZYSTEGO CardType I ZACHOWANIE STANU POLA BITWY
+            let pureCardType: CardType;
+            // ZMIANA: Przechwytujemy stan CardOnField, jeśli karta pochodzi z pola bitwy
+            let originalCardOnField: CardOnField | null = null;
+
+            if (isCardOnField(cardUnionType)) {
+                // Jeśli karta pochodziła z pola bitwy (jest CardOnField), wyciągnij bazowy CardType i zachowaj stan
+                pureCardType = cardUnionType.card;
+                originalCardOnField = cardUnionType;
+            } else {
+                // W przeciwnym razie jest to już CardType
+                pureCardType = cardUnionType;
+            }
+
+            // 4. Dodaj kartę do strefy docelowej
+            if (to === "battlefield") {
+                // Używamy zachowanego stanu (jeśli jest dostępny) lub wartości domyślnych
+                const cardOnField: CardOnField = {
+                    id: cardId,
+                    card: pureCardType, // Używamy CZYSTEGO CardType
+                    // ZACHOWUJEMY STAN POLA BITWY (w tym isToken)
+                    x: x ?? originalCardOnField?.x ?? 50,
+                    y: y ?? originalCardOnField?.y ?? 50,
+                    rotation: originalCardOnField?.rotation ?? 0,
+                    isFlipped: originalCardOnField?.isFlipped ?? false,
+                    isToken: originalCardOnField?.isToken ?? false, // KLUCZOWA ZMIANA: Zachowujemy isToken
+                    // Resetujemy statystyki i liczniki, jeśli karta jest przenoszona Z INNEJ strefy
+                    stats: from === "battlefield" ? originalCardOnField!.stats : { power: 0, toughness: 0 },
+                    counters: from === "battlefield" ? originalCardOnField!.counters : 0,
+                };
+                player.battlefield.push(cardOnField);
+            } else {
+                // Przeniesienie do innej strefy (ręka, grobowiec, biblioteka, exile, sideboard, commanderZone)
+
+                const destinationZone = player[to as keyof Player] as CardType[];
+
+                // Walidacja strefy docelowej
+                if (!Array.isArray(destinationZone)) {
+                    console.error(`[MOVE-FAIL] Nieprawidłowa strefa docelowa (nie-tablicowa): ${to}.`);
+                    // Wracamy kartę, aby uniknąć jej utraty (wracamy CZYSTY CardType)
+                    (sourceZone as any[]).push(pureCardType); 
+                    socket.emit("error", "Wewnętrzny błąd serwera: Nieprawidłowa strefa docelowa.");
+                    return;
+                }
+
+                // Obsługa różnych stref docelowych
+                if (to === "library") {
                     if (toBottom) {
-                        destinationZone.push(pureCard);
+                        // Dodaj na koniec tablicy (dół biblioteki)
+                        destinationZone.push(pureCardType);
                         console.log(
-                            `[MOVE] Karta ${cardId} dodana na dół biblioteki.`
+                            `[MOVE] Karta ${cardId} przeniesiona na DÓŁ biblioteki.`
                         );
                     } else {
-                        destinationZone.unshift(pureCard);
+                        // Dodaj na początek tablicy (góra biblioteki)
+                        destinationZone.unshift(pureCardType);
                         console.log(
-                            `[MOVE] Karta ${cardId} dodana na górę biblioteki.`
+                            `[MOVE] Karta ${cardId} przeniesiona na GÓRĘ biblioteki.`
                         );
                     }
-                    break;
-
-                case "hand":
-                case "graveyard":
-                case "exile":
-                case "sideboard":
-                    destinationZone.push(pureCard);
-                    break;
-
-                case "commanderZone":
-                    destinationZone.unshift(pureCard);
-                    break;
-
-                default:
-                    console.warn(`[MOVE] Nieobsługiwana strefa docelowa: ${to}`);
-                    destinationZone.push(pureCard);
+                } else if (to === "commanderZone") {
+                    // Dodaj na początek tablicy (zazwyczaj jest to traktowane jako "góra" strefy)
+                    destinationZone.unshift(pureCardType); 
+                    console.log(
+                        `[MOVE] Karta ${cardId} przeniesiona do strefy dowodzenia.`
+                    );
+                } else if (
+                    to === "hand" ||
+                    to === "graveyard" ||
+                    to === "exile" ||
+                    to === "sideboard"
+                ) {
+                    // Dodaj na koniec (najnowsza karta/góra stosu)
+                    destinationZone.push(pureCardType);
+                }
             }
-        }
 
-        // 🔄 Synchronizacja z klientami
-        io.to(code).emit("updateState", session);
-        console.log(
-            `[MOVE] ${cardId} (${playerId}): ${from} ➜ ${to}`
-        );
+            // Jeśli używasz jakichkolwiek asynchronicznych operacji I/O (np. zapisu do bazy danych), 
+            // powinieneś użyć tutaj 'await' i obsłużyć to w tym bloku try/catch.
+
+            io.to(code).emit("updateState", session);
+            console.log(
+                `Karta ${cardId} gracza ${playerId} przeniesiona z ${from} do ${to}.`
+            );
+        } catch (error) {
+            // 🛑 GLOBALNY CATCHER BŁĘDÓW ASYNCHRONICZNYCH
+            console.error(
+                `[FATAL-ERROR] Nieoczekiwany błąd w moveCard (async) dla karty ${cardId} z ${from} do ${to}:`,
+                error
+            );
+            // Wysyłamy ogólny błąd do klienta, aby uniknąć zawieszenia
+            socket.emit("error", "Wystąpił nieoczekiwany błąd serwera. Spróbuj ponownie.");
+        }
     }
 );
 
+  //--------------------------------------------------------------------------------
 
   socket.on("disconnect", () => {
     console.log("Użytkownik rozłączył się:", socket.id);
