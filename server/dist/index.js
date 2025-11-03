@@ -2,17 +2,14 @@ import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
-// ==== Setup serwera ====
+// ==== Serwer Express + Socket.IO ====
 const app = express();
 app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"],
-    },
+    cors: { origin: "*", methods: ["GET", "POST"] },
 });
-// ==== Stałe sesje i ich inicjalizacja ====
+// ==== Stałe sesje ====
 const sessions = {};
 const initialSessions = [
     { code: "STND1", sessionType: "standard" },
@@ -21,80 +18,10 @@ const initialSessions = [
     { code: "CMDR2", sessionType: "commander" },
 ];
 initialSessions.forEach(({ code, sessionType }) => {
-    sessions[code] = {
-        code,
-        players: [],
-        turn: 0,
-        activePlayer: "",
-        sessionType,
-    };
-    console.log(`Zainicjowano stałą sesję: ${code} (${sessionType})`);
+    sessions[code] = { code, players: [], turn: 0, activePlayer: "", sessionType };
+    console.log(`Zainicjowano sesję: ${code} (${sessionType})`);
 });
-// ==== LOGIKA SORTOWANIA (NOWA FUNKCJA POMOCNICZA) ====
-// --------------------------------------------------------------------------------------------------
-function sortCards(hand, criteria) {
-    // Kopia tablicy, aby nie modyfikować jej bezpośrednio w trakcie sortowania
-    const sortedHand = [...hand];
-    sortedHand.sort((a, b) => {
-        let valA;
-        let valB;
-        switch (criteria) {
-            case "mana_cost":
-                // Dla mana_cost używamy długości stringa jako prostej metryki sortowania
-                // Można to ulepszyć, używając biblioteki do parsowania kosztu many (np. manacost-to-cmc)
-                // lub sortując alfabetycznie, co daje przyzwoity efekt.
-                valA = a.mana_value || "";
-                valB = b.mana_value || "";
-                // Sortowanie alfabetyczne po stringu (dla efektu 'zwykłego' sortowania po cenie)
-                if (valA < valB)
-                    return -1;
-                if (valA > valB)
-                    return 1;
-                return 0;
-            case "name":
-                valA = a.name.toLowerCase();
-                valB = b.name.toLowerCase();
-                if (valA < valB)
-                    return -1;
-                if (valA > valB)
-                    return 1;
-                return 0;
-            case "type_line":
-                // W Magic The Gathering zazwyczaj sortuje się po typie w kolejności:
-                // Landy, Kreatury, Sorcery, Instants, Artefakty, Enchantmenty.
-                // Tutaj używamy prostego sortowania alfabetycznego po Type Line.
-                valA = a.type_line?.toLowerCase() || "";
-                valB = b.type_line?.toLowerCase() || "";
-                if (valA < valB)
-                    return -1;
-                if (valA > valB)
-                    return 1;
-                return 0;
-            default:
-                return 0; // Brak sortowania
-        }
-    });
-    return sortedHand;
-}
-// ----------------------
-// ===========================================
-// --------------------------------------------------------------------------------------------------
-// ==== LOGIKA STATYSTYK SESJI (NOWA SEKCJA) ====
-// --------------------------------------------------------------------------------------------------
-function getSessionStats() {
-    const stats = {};
-    for (const code in sessions) {
-        stats[code] = sessions[code].players.length;
-    }
-    return stats;
-}
-function emitSessionStats() {
-    const stats = getSessionStats();
-    // Wysyłamy statystyki do WSZYSTKICH podłączonych klientów
-    io.emit("updateSessionStats", stats);
-    // console.log("[STATS] Wysłano statystyki sesji:", stats); // Odkomentuj do debugowania
-}
-// --------------------------------------------------------------------------------------------------
+// ==== Funkcje pomocnicze ====
 function shuffle(array) {
     const result = [...array];
     for (let i = result.length - 1; i > 0; i--) {
@@ -109,13 +36,59 @@ function getRandomInt(max) {
 function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function sortCards(hand, criteria) {
+    const sortedHand = [...hand];
+    sortedHand.sort((a, b) => {
+        let valA;
+        let valB;
+        switch (criteria) {
+            case "mana_cost":
+                valA = a.mana_value || 0;
+                valB = b.mana_value || 0;
+                return valA - valB;
+            case "name":
+                valA = a.name.toLowerCase();
+                valB = b.name.toLowerCase();
+                if (valA < valB)
+                    return -1;
+                if (valA > valB)
+                    return 1;
+                return 0;
+            case "type_line":
+                valA = a.type_line?.toLowerCase() || "";
+                valB = b.type_line?.toLowerCase() || "";
+                if (valA < valB)
+                    return -1;
+                if (valA > valB)
+                    return 1;
+                return 0;
+            default:
+                return 0;
+        }
+    });
+    return sortedHand;
+}
+function getSessionStats() {
+    const stats = {};
+    for (const code in sessions) {
+        stats[code] = sessions[code].players.length;
+    }
+    return stats;
+}
+function emitSessionStats() {
+    io.emit("updateSessionStats", getSessionStats());
+}
+function isCardOnField(card) {
+    return card.card !== undefined;
+}
+const deepClone = (obj) => JSON.parse(JSON.stringify(obj));
 // ==== Socket.IO ====
 io.on("connection", (socket) => {
     console.log("Użytkownik połączony:", socket.id);
     // WYSYŁAMY STATYSTYKI NATYCHMIAST PO POŁĄCZENIU
     emitSessionStats();
     socket.on("joinSession", ({ code, playerName, deck, // PEŁNA talia (w tym Dowódca na pierwszej pozycji w trybie Commander)
-    sideboardCards, }) => {
+    sideboardCards, commanderCard, }) => {
         console.log(`[JOIN-REQ] Gracz ${playerName} (${socket.id}) chce dołączyć do sesji ${code}. Talia: ${deck.length}`);
         const session = sessions[code];
         if (!session) {
@@ -134,38 +107,49 @@ io.on("connection", (socket) => {
             return;
         }
         let life = session.sessionType === "commander" ? 40 : 20;
-        // Używamy KOPII talii, którą będziemy modyfikować (usuwamy Dowódcę)
+        // ⚠️ ZMODYFIKOWANA LOGIKA INICJALIZACJI TALII/COMMANDERA
         let libraryForShuffle = [...deck];
-        let commander;
+        let commanders = commanderCard || [];
         let commanderZone = [];
         if (session.sessionType === "commander") {
-            // Pobiera i usuwa pierwszą kartę z KOPII talii (libraryForShuffle)
-            const commanderCard = libraryForShuffle.shift();
-            if (commanderCard) {
-                commander = commanderCard;
-                commanderZone = [commanderCard];
-                console.log(`[JOIN] Tryb Commander. Dowódca wybrany: ${commanderCard.name}. Karty w bibliotece do tasowania: ${libraryForShuffle.length}`);
+            if (commanders.length > 0) {
+                let cardsRemoved = 0;
+                // Przechodzimy przez KAŻDEGO dowódcę
+                commanders.forEach((commander) => {
+                    const commanderIndex = libraryForShuffle.findIndex((card) => card.id === commander.id);
+                    if (commanderIndex > -1) {
+                        libraryForShuffle.splice(commanderIndex, 1); // Usuń Dowódcę z biblioteki
+                        cardsRemoved++;
+                    }
+                });
+                commanderZone = [...commanders]; // Wszyscy dowódcy idą do strefy
+                console.log(`[JOIN] Tryb Commander. Wybrano ${commanders.length} Dowódców. Usunięto z talii do tasowania: ${cardsRemoved}. Karty w bibliotece do tasowania: ${libraryForShuffle.length}`);
             }
             else {
-                console.log(`[JOIN-FAIL] ${playerName}: Tryb Commander wymaga dowódcy, ale talia jest pusta po shift().`);
-                socket.emit("error", "W trybie Commander talia musi zawierać co najmniej jedną kartę dowódcy (pierwsza karta w talii).");
+                console.log(`[JOIN-FAIL] ${playerName}: Tryb Commander wymaga co najmniej jednego dowódcy.`);
+                socket.emit("error", "W trybie Commander talia musi zawierać co najmniej jedną kartę dowódcy.");
                 return;
             }
         }
+        else {
+            commanders = []; // Upewnij się, że commanders jest puste w trybie Standard
+            commanderZone = [];
+        }
+        // ----------------------------------------------------
         const player = {
             id: socket.id,
             name: playerName,
             life,
-            initialDeck: [...deck], // 🟢 POPRAWKA: ZAWSZE PEŁNA TALIA
+            initialDeck: [...deck], // ZAWSZE PEŁNA TALIA
             initialSideboard: [...sideboardCards],
-            library: shuffle(libraryForShuffle), // Biblioteka ZAWSZE jest potasowana i bez dowódcy (jeśli Commander)
+            library: shuffle(libraryForShuffle), // Biblioteka potasowana i bez dowódców
             hand: [],
             battlefield: [],
             graveyard: [],
             exile: [],
-            commanderZone, // Dowódca lub pusta
-            commander, // Karta Dowódcy lub undefined
+            commanderZone, // Lista dowódców lub pusta
             sideboard: [...sideboardCards],
+            commanders: [...commanders],
             manaPool: { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 },
             counters: {
                 Poison: 0,
@@ -178,12 +162,6 @@ io.on("connection", (socket) => {
                 "Commander 3": 0,
             },
         };
-        // Dobieranie 7 kart
-        for (let i = 0; i < 7 && player.library.length > 0; i++) {
-            const card = player.library.shift();
-            if (card)
-                player.hand.push(card);
-        }
         session.players.push(player);
         socket.join(code);
         if (session.players.length === 1) {
@@ -200,61 +178,65 @@ io.on("connection", (socket) => {
     socket.on("startGame", ({ code, sessionType }) => {
         const session = sessions[code];
         if (session) {
-            // Używamy typu sesji ustawionego przy inicjalizacji, a nie przekazanego z klienta
             const currentSessionType = session.sessionType;
             session.players.forEach((player) => {
                 if (!player.initialDeck || player.initialDeck.length === 0) {
                     socket.emit("error", `Deck is empty for a player ${player.name}! Cannot start game.`);
                     return;
                 }
+                let commanders = player.commanders || [];
+                // KROK 1: Resetuj strefy i życie
                 player.life = currentSessionType === "commander" ? 40 : 20;
-                let deckToShuffle = [...player.initialDeck];
-                let commanderCard = player.commander; // Zacznij od obecnego dowódcy
-                if (currentSessionType === "commander") {
-                    if (!player.commander) {
-                        // JEŚLI DOWÓDCA NIE BYŁ JESZCZE USTAWIONY
-                        // Ustawienie dowódcy po raz pierwszy (jak w oryginalnym kodzie)
-                        commanderCard = deckToShuffle.shift();
-                        if (commanderCard) {
-                            player.commander = commanderCard;
-                            player.commanderZone = [commanderCard];
-                        }
-                        else {
-                            socket.emit("error", `Commander card not found for player ${player.name}.`);
-                            return; // Zakończenie inicjalizacji gracza
-                        }
-                    }
-                    else {
-                        // Dowódca już jest, upewnij się, że nie jest w talii do potasowania
-                        // Usuń kartę dowódcy z talii do potasowania (może być potrzebne, jeśli initialDeck zawiera dowódcę)
-                        const commanderIndex = deckToShuffle.findIndex((card) => card.id === player.commander.id);
-                        if (commanderIndex > -1) {
-                            deckToShuffle.splice(commanderIndex, 1);
-                        }
-                        player.commanderZone = [player.commander]; // Ustaw go w strefie
-                    }
-                }
-                else {
-                    // Tryb inny niż Commander
-                    player.commander = undefined;
-                    player.commanderZone = [];
-                }
-                player.library = shuffle(deckToShuffle);
                 player.hand = [];
                 player.battlefield = [];
                 player.graveyard = [];
-                player.exile = []; // Resetuj exile
+                player.exile = [];
                 player.sideboard = [...player.initialSideboard];
+                player.manaPool = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 }; // Uzupełnienie: reset puli many
+                player.commanderZone = [...commanders];
+                // KROK 2: Przygotuj PEŁNĄ talię do tasowania
+                let deckToShuffle = [...player.initialDeck];
+                // KROK 3: Obsługa Dowódców (usuwamy Dowódców z talii do tasowania)
+                if (currentSessionType === "commander") {
+                    // Lista Dowódców, którzy mają być w strefie
+                    const commandersToZone = player.commanderZone.length > 0
+                        ? player.commanderZone
+                        : []; // Jeśli z jakiegoś powodu pusta (błąd klienta)
+                    if (commandersToZone.length === 0) {
+                        socket.emit("error", `W trybie Commander musisz mieć dowódcę ustawionego dla gracza ${player.name}.`);
+                        return;
+                    }
+                    // Usuń Dowódców z talii do tasowania (sprawdzamy po ID)
+                    commandersToZone.forEach(commander => {
+                        const commanderIndex = deckToShuffle.findIndex((card) => card.id === commander.id);
+                        if (commanderIndex > -1) {
+                            deckToShuffle.splice(commanderIndex, 1);
+                        }
+                    });
+                    // Ustaw Dowódców w strefie dowódcy (z powrotem tam, gdzie byli)
+                    player.commanderZone = commandersToZone;
+                }
+                else {
+                    // Tryb Standard: strefa Dowódcy pusta
+                    player.commanderZone = [];
+                }
+                // KROK 4: Tasowanie i dociąganie
+                player.library = shuffle(deckToShuffle);
                 for (let i = 0; i < 7 && player.library.length > 0; i++) {
                     const card = player.library.shift();
                     if (card)
                         player.hand.push(card);
                 }
+                // Uzupełnienie: Reset liczników gracza
+                player.counters = {
+                    Poison: 0, Energy: 0, Experience: 0, Rad: 0, Tickets: 0,
+                    "Commander 1": 0, "Commander 2": 0, "Commander 3": 0,
+                };
             });
             const randomPlayerIndex = Math.floor(Math.random() * session.players.length);
             session.turn = 1;
             session.activePlayer = session.players[randomPlayerIndex].id;
-            session.sessionType = currentSessionType; // Wymuś typ stałej sesji
+            session.sessionType = currentSessionType;
             io.to(code).emit("updateState", session);
             console.log(`Gra w sesji ${code} została rozpoczęta. Tryb: ${currentSessionType}`);
         }
@@ -270,20 +252,8 @@ io.on("connection", (socket) => {
         // KROK 1: Użyj bazowej talii (PEŁNEJ) do resetu.
         let fullDeckForShuffle = [...player.initialDeck];
         const currentSessionType = session.sessionType;
-        // KROK 2: Obsługa dowódcy w formacie Commander
-        if (currentSessionType === "commander" && player.commander) {
-            player.commanderZone = [player.commander];
-            // ⚠️ Ważne: usuń Dowódcę z talii PRZED tasowaniem
-            const commanderIndex = fullDeckForShuffle.findIndex((card) => card.id === player.commander.id);
-            if (commanderIndex > -1) {
-                fullDeckForShuffle.splice(commanderIndex, 1);
-                console.log(`[RESET] Usunięto dowódcę ${player.commander.name} z talii do tasowania.`);
-            }
-        }
-        else {
-            player.commanderZone = [];
-        }
-        // KROK 3: Reset życia i pozostałych stref.
+        let commanders = player.commanders || [];
+        // KROK 2: Reset życia i pozostałych stref
         player.life = currentSessionType === "commander" ? 40 : 20;
         player.hand = [];
         player.graveyard = [];
@@ -295,6 +265,25 @@ io.on("connection", (socket) => {
             Poison: 0, Energy: 0, Experience: 0, Rad: 0, Tickets: 0,
             "Commander 1": 0, "Commander 2": 0, "Commander 3": 0,
         };
+        player.commanderZone = [...commanders];
+        // KROK 3: Obsługa Dowódcy (usuwamy Dowódców z talii do tasowania)
+        if (currentSessionType === "commander" && player.commanderZone.length > 0) {
+            // Lista Dowódców, którzy mają być w strefie
+            const commandersToZone = player.commanderZone;
+            // Usuń Dowódców z talii PRZED tasowaniem
+            commandersToZone.forEach(commander => {
+                const commanderIndex = fullDeckForShuffle.findIndex((card) => card.id === commander.id);
+                if (commanderIndex > -1) {
+                    fullDeckForShuffle.splice(commanderIndex, 1);
+                    console.log(`[RESET] Usunięto dowódcę ${commander.name} z talii do tasowania.`);
+                }
+            });
+            // Ustaw Dowódców w strefie dowódcy
+            player.commanderZone = commandersToZone;
+        }
+        else {
+            player.commanderZone = [];
+        }
         // KROK 4: Wypełnij bibliotekę i przetasuj.
         player.library = shuffle(fullDeckForShuffle);
         // KROK 5: Dociągnij rękę startową (7 kart)
@@ -340,108 +329,144 @@ io.on("connection", (socket) => {
         // Najbezpieczniej jest jednak sprawdzać pole 'card'
         return card.card !== undefined;
     }
-    socket.on("moveCard", ({ code, playerId, from, to, cardId, x, y, position, toBottom, // Opcjonalny parametr
+    //--------------------------------------------------------------------------------
+    socket.on("moveCard", 
+    // 💡 Dodajemy 'async' do funkcji zwrotnej, aby umożliwić asynchroniczne try-catch
+    async ({ code, playerId, from, to, cardId, x, y, position, // Parametr nieużywany w poniższej logice, ale zachowany
+    toBottom, // Opcjonalny parametr
      }) => {
-        const session = sessions[code];
-        if (!session)
-            return;
-        const player = session.players.find((p) => p.id === playerId);
-        if (!player)
-            return;
-        // 1. Walidacja tokenów (tokeny są usuwane, jeśli opuszczają pole bitwy)
-        if (from === "battlefield" && to !== "battlefield") {
-            const cardIndex = player.battlefield.findIndex((c) => c.id === cardId);
+        try {
+            const session = sessions[code];
+            if (!session)
+                return;
+            const player = session.players.find((p) => p.id === playerId);
+            if (!player)
+                return;
+            await delay(1); // Symulacja dostępu I/O
+            // 🟢 WALIDACJA (Poprawka błędu 'Nieprawidłowa strefa źródłowa: . Otrzymano: undefined')
+            if (!from || typeof from !== 'string' || !player.hasOwnProperty(from)) {
+                console.error(`[MOVE-FAIL] BŁĄD WALIDACJI: 'from' jest nieprawidłowe lub puste. Otrzymano: ${from}`);
+                socket.emit("error", "Nie można przenieść karty: brakuje strefy źródłowej lub jest nieprawidłowa.");
+                return;
+            }
+            // 1. Walidacja tokenów (tokeny są usuwane, jeśli opuszczają pole bitwy)
+            if (from === "battlefield" && to !== "battlefield") {
+                const cardIndex = player.battlefield.findIndex((c) => c.id === cardId);
+                if (cardIndex === -1) {
+                    console.warn(`[MOVE] Karta ${cardId} nie znaleziona na polu bitwy.`);
+                    return;
+                }
+                const cardToMove = player.battlefield[cardIndex];
+                // Jeśli przenoszona karta jest tokenem, usuń ją (tokeny nie idą do grobu/ręki)
+                if (cardToMove.isToken === true) {
+                    player.battlefield.splice(cardIndex, 1);
+                    console.log(`[MOVE] Token ${cardId} z pola bitwy został usunięty (do ${to}).`);
+                    io.to(code).emit("updateState", session);
+                    return;
+                }
+            }
+            // 2. Zlokalizuj kartę w strefie źródłowej i usuń ją
+            // Użycie `from as keyof Player` z nową walidacją jest bezpieczne, 
+            // a TypeScripcie jest to rzutowanie, aby uzyskać dostęp do właściwości gracza.
+            const sourceZone = player[from];
+            if (!Array.isArray(sourceZone)) {
+                // Ten błąd powinien być już minimalny dzięki walidacji powyżej, 
+                // ale jest to dodatkowe zabezpieczenie, jeśli `from` wskazuje na nie-tablicową właściwość (np. 'name' lub 'life')
+                console.error(`[MOVE] Nieprawidłowa strefa źródłowa (nie-tablicowa): ${from}. Otrzymano: ${sourceZone}`);
+                // Nie emitujemy błędu do użytkownika, bo jest to wewnętrzny błąd kodu.
+                return;
+            }
+            const cardIndex = sourceZone.findIndex((card) => card.id === cardId);
+            // 🛑 ZABEZPIECZENIE PRZED RACE CONDITION I DESYNCHRONIZACJĄ
             if (cardIndex === -1) {
-                console.warn(`[MOVE] Karta ${cardId} nie znaleziona na polu bitwy.`);
-                return;
-            }
-            const cardToMove = player.battlefield[cardIndex];
-            // Jeśli przenoszona karta jest tokenem, usuń ją (tokeny nie idą do grobu/ręki)
-            if (cardToMove.isToken === true) {
-                player.battlefield.splice(cardIndex, 1);
-                console.log(`[MOVE] Token ${cardId} z pola bitwy został usunięty (do ${to}).`);
+                console.warn(`[MOVE] Karta ${cardId} nie znaleziona w strefie źródłowej ${from}. Żądanie pominięte. Wymuszam synchronizację stanu klienta.`);
+                // Wymuś pełną synchronizację stanu. Klient zaktualizuje się do poprawnego stanu serwera.
                 io.to(code).emit("updateState", session);
-                return;
+                return; // Zakończ funkcję, by nie wykonywać dalszej logiki.
             }
-        }
-        // 2. Zlokalizuj kartę w strefie źródłowej i usuń ją
-        const sourceZone = player[from];
-        if (!Array.isArray(sourceZone)) {
-            console.error(`[MOVE] Nieprawidłowa strefa źródłowa: ${from}. Otrzymano: ${sourceZone}`);
-            return;
-        }
-        const cardIndex = sourceZone.findIndex((card) => card.id === cardId);
-        if (cardIndex === -1) {
-            console.warn(`[MOVE] Karta ${cardId} nie znaleziona w strefie źródłowej ${from}.`);
-            return;
-        }
-        // Usuń kartę ze strefy źródłowej
-        const [cardUnionType] = sourceZone.splice(cardIndex, 1);
-        // ✅ KROK 3: WYCIĄGNIĘCIE CZYSTEGO CardType I ZACHOWANIE STANU POLA BITWY
-        let pureCardType;
-        // ZMIANA: Przechwytujemy stan CardOnField, jeśli karta pochodzi z pola bitwy
-        let originalCardOnField = null;
-        if (isCardOnField(cardUnionType)) {
-            // Jeśli karta pochodziła z pola bitwy (jest CardOnField), wyciągnij bazowy CardType i zachowaj stan
-            pureCardType = cardUnionType.card;
-            originalCardOnField = cardUnionType;
-        }
-        else {
-            // W przeciwnym razie jest to już CardType
-            pureCardType = cardUnionType;
-        }
-        // 4. Dodaj kartę do strefy docelowej
-        if (to === "battlefield") {
-            // Używamy zachowanego stanu (jeśli jest dostępny) lub wartości domyślnych
-            const cardOnField = {
-                id: cardId,
-                card: pureCardType, // Używamy CZYSTEGO CardType
-                // ZACHOWUJEMY STAN POLA BITWY (w tym isToken)
-                x: x ?? originalCardOnField?.x ?? 50,
-                y: y ?? originalCardOnField?.y ?? 50,
-                rotation: originalCardOnField?.rotation ?? 0,
-                isFlipped: originalCardOnField?.isFlipped ?? false,
-                isToken: originalCardOnField?.isToken ?? false, // KLUCZOWA ZMIANA: Zachowujemy isToken
-                stats: originalCardOnField?.stats ?? { power: 0, toughness: 0 },
-                counters: originalCardOnField?.counters ?? 0,
-            };
-            player.battlefield.push(cardOnField);
-        }
-        else {
-            // Przeniesienie do innej strefy (ręka, grobowiec, biblioteka, exile, sideboard, commanderZone)
-            const destinationZone = player[to];
-            // Walidacja strefy docelowej
-            if (!Array.isArray(destinationZone)) {
-                console.error(`[MOVE] Nieprawidłowa strefa docelowa: ${to}.`);
-                // Wracamy kartę, aby uniknąć jej utraty (wracamy CZYSTY CardType)
-                sourceZone.push(pureCardType);
-                return;
+            // Usuń kartę ze strefy źródłowej
+            const [cardUnionType] = sourceZone.splice(cardIndex, 1);
+            // ✅ KROK 3: WYCIĄGNIĘCIE CZYSTEGO CardType I ZACHOWANIE STANU POLA BITWY
+            let pureCardType;
+            // ZMIANA: Przechwytujemy stan CardOnField, jeśli karta pochodzi z pola bitwy
+            let originalCardOnField = null;
+            if (isCardOnField(cardUnionType)) {
+                // Jeśli karta pochodziła z pola bitwy (jest CardOnField), wyciągnij bazowy CardType i zachowaj stan
+                pureCardType = cardUnionType.card;
+                originalCardOnField = cardUnionType;
             }
-            // Obsługa różnych stref docelowych
-            if (to === "library") {
-                if (toBottom) {
-                    // Dodaj na koniec tablicy (dół biblioteki)
-                    destinationZone.push(pureCardType);
-                    console.log(`[MOVE] Karta ${cardId} przeniesiona na DÓŁ biblioteki.`);
+            else {
+                // W przeciwnym razie jest to już CardType
+                pureCardType = cardUnionType;
+            }
+            // 4. Dodaj kartę do strefy docelowej
+            if (to === "battlefield") {
+                // Używamy zachowanego stanu (jeśli jest dostępny) lub wartości domyślnych
+                const cardOnField = {
+                    id: cardId,
+                    card: pureCardType, // Używamy CZYSTEGO CardType
+                    // ZACHOWUJEMY STAN POLA BITWY (w tym isToken)
+                    x: x ?? originalCardOnField?.x ?? 50,
+                    y: y ?? originalCardOnField?.y ?? 50,
+                    rotation: originalCardOnField?.rotation ?? 0,
+                    isFlipped: originalCardOnField?.isFlipped ?? false,
+                    isToken: originalCardOnField?.isToken ?? false, // KLUCZOWA ZMIANA: Zachowujemy isToken
+                    // Resetujemy statystyki i liczniki, jeśli karta jest przenoszona Z INNEJ strefy
+                    stats: from === "battlefield" ? originalCardOnField.stats : { power: 0, toughness: 0 },
+                    counters: from === "battlefield" ? originalCardOnField.counters : 0,
+                };
+                player.battlefield.push(cardOnField);
+            }
+            else {
+                // Przeniesienie do innej strefy (ręka, grobowiec, biblioteka, exile, sideboard, commanderZone)
+                const destinationZone = player[to];
+                // Walidacja strefy docelowej
+                if (!Array.isArray(destinationZone)) {
+                    console.error(`[MOVE-FAIL] Nieprawidłowa strefa docelowa (nie-tablicowa): ${to}.`);
+                    // Wracamy kartę, aby uniknąć jej utraty (wracamy CZYSTY CardType)
+                    sourceZone.push(pureCardType);
+                    socket.emit("error", "Wewnętrzny błąd serwera: Nieprawidłowa strefa docelowa.");
+                    return;
                 }
-                else {
-                    // Dodaj na początek tablicy (góra biblioteki)
+                // Obsługa różnych stref docelowych
+                if (to === "library") {
+                    if (toBottom) {
+                        // Dodaj na koniec tablicy (dół biblioteki)
+                        destinationZone.push(pureCardType);
+                        console.log(`[MOVE] Karta ${cardId} przeniesiona na DÓŁ biblioteki.`);
+                    }
+                    else {
+                        // Dodaj na początek tablicy (góra biblioteki)
+                        destinationZone.unshift(pureCardType);
+                        console.log(`[MOVE] Karta ${cardId} przeniesiona na GÓRĘ biblioteki.`);
+                    }
+                }
+                else if (to === "commanderZone") {
+                    // Dodaj na początek tablicy (zazwyczaj jest to traktowane jako "góra" strefy)
                     destinationZone.unshift(pureCardType);
-                    console.log(`[MOVE] Karta ${cardId} przeniesiona na GÓRĘ biblioteki.`);
+                    console.log(`[MOVE] Karta ${cardId} przeniesiona do strefy dowodzenia.`);
+                }
+                else if (to === "hand" ||
+                    to === "graveyard" ||
+                    to === "exile" ||
+                    to === "sideboard") {
+                    // Dodaj na koniec (najnowsza karta/góra stosu)
+                    destinationZone.push(pureCardType);
                 }
             }
-            else if (to === "hand" ||
-                to === "graveyard" ||
-                to === "exile" ||
-                to === "sideboard" ||
-                to === "commanderZone") {
-                // Dodaj na koniec (najnowsza karta/góra stosu)
-                destinationZone.push(pureCardType);
-            }
+            // Jeśli używasz jakichkolwiek asynchronicznych operacji I/O (np. zapisu do bazy danych), 
+            // powinieneś użyć tutaj 'await' i obsłużyć to w tym bloku try/catch.
+            io.to(code).emit("updateState", session);
+            console.log(`Karta ${cardId} gracza ${playerId} przeniesiona z ${from} do ${to}.`);
         }
-        io.to(code).emit("updateState", session);
-        console.log(`Karta ${cardId} gracza ${playerId} przeniesiona z ${from} do ${to}.`);
+        catch (error) {
+            // 🛑 GLOBALNY CATCHER BŁĘDÓW ASYNCHRONICZNYCH
+            console.error(`[FATAL-ERROR] Nieoczekiwany błąd w moveCard (async) dla karty ${cardId} z ${from} do ${to}:`, error);
+            // Wysyłamy ogólny błąd do klienta, aby uniknąć zawieszenia
+            socket.emit("error", "Wystąpił nieoczekiwany błąd serwera. Spróbuj ponownie.");
+        }
     });
+    //--------------------------------------------------------------------------------
     socket.on("disconnect", () => {
         console.log("Użytkownik rozłączył się:", socket.id);
         for (const code in sessions) {
