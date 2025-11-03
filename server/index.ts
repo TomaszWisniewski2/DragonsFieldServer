@@ -633,11 +633,15 @@ socket.on(
                 (card: CardType | CardOnField) => card.id === cardId
             );
 
+            // 🛑 ZABEZPIECZENIE PRZED RACE CONDITION I DESYNCHRONIZACJĄ
             if (cardIndex === -1) {
                 console.warn(
-                    `[MOVE] Karta ${cardId} nie znaleziona w strefie źródłowej ${from}.`
+                    `[MOVE] Karta ${cardId} nie znaleziona w strefie źródłowej ${from}. Żądanie pominięte. Wymuszam synchronizację stanu klienta.`
                 );
-                return;
+                
+                // Wymuś pełną synchronizację stanu. Klient zaktualizuje się do poprawnego stanu serwera.
+                io.to(code).emit("updateState", session);
+                return; // Zakończ funkcję, by nie wykonywać dalszej logiki.
             }
 
             // Usuń kartę ze strefy źródłowej
