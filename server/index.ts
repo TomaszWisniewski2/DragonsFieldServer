@@ -65,6 +65,7 @@ export interface CardOnField {
 export interface Player {
   id: string;
   name: string;
+  isOnline: boolean;
   life: number;
   initialDeck: CardType[];
   initialSideboard: CardType[];
@@ -188,12 +189,12 @@ io.on("connection", (socket) => {
  // WYSYŁAMY STATYSTYKI NATYCHMIAST PO POŁĄCZENIU
  emitSessionStats(); 
 
- socket.on(
+socket.on(
   "joinSession",
   ({
     code,
     playerName,
-    deck, // PEŁNA talia (w tym Dowódca na pierwszej pozycji w trybie Commander)
+    deck,
     sideboardCards,
     commanderCard,
   }: {
@@ -217,9 +218,37 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (session.players.some((p) => p.id === socket.id)) {
-      console.log(`[JOIN-FAIL] ${playerName}: Już jest w sesji.`);
-      socket.emit("error", "Jesteś już w tej sesji.");
+    // 🛑 KROK 1: Sprawdzenie, czy gracz już istnieje po nazwie (PONOWNE POŁĄCZENIE)
+    const existingPlayer = session.players.find((p) => p.name === playerName);
+
+    if (existingPlayer) {
+      // 🟢 SCENARIUSZ: PONOWNE POŁĄCZENIE (RECONNECTION)
+      console.log(`[RECONNECT] Gracz ${playerName} ponownie dołącza do sesji ${code}.`);
+
+      // 1. Zaktualizuj Socket ID gracza na nowy (jest to kluczowe)
+      existingPlayer.id = socket.id;
+      // Zakładamy, że isOnline jest już zaimplementowane w Player
+      // existingPlayer.isOnline = true; 
+
+      // 2. Dołącz nowy socket do pokoju, tylko jeśli nie jest już w nim
+      if (!socket.rooms.has(code)) {
+        socket.join(code);
+      } else {
+        console.warn(`[RECONNECT-WARN] Socket ${socket.id} już jest w pokoju ${code}.`);
+      }
+
+      io.to(code).emit("updateState", session);
+      emitSessionStats();
+      return;
+    }
+
+    // 🛑 KROK 2: Walidacja dla NOWYCH graczy
+
+    // Walidacja: czy nazwa gracza jest już zajęta. 
+    // Jeśli gracz został usunięty przez 'disconnectPlayer', to to sprawdzenie zwróci 'false' i jest OK.
+    if (session.players.some((p) => p.name === playerName)) {
+      console.log(`[JOIN-FAIL] ${playerName}: Nazwa jest zajęta.`);
+      socket.emit("error", "Gracz o tej nazwie już istnieje w sesji.");
       return;
     }
 
@@ -233,16 +262,16 @@ io.on("connection", (socket) => {
     }
 
     let life = session.sessionType === "commander" ? 40 : 20;
-    
-// ⚠️ ZMODYFIKOWANA LOGIKA INICJALIZACJI TALII/COMMANDERA
-      let libraryForShuffle: CardType[] = [...deck];
-      let commanders: CardType[] = commanderCard || []; 
-      let commanderZone: CardType[] = [];
 
-if (session.sessionType === "commander") {
+    // ⚠️ ZMODYFIKOWANA LOGIKA INICJALIZACJI TALII/COMMANDERA
+    let libraryForShuffle: CardType[] = [...deck];
+    let commanders: CardType[] = commanderCard || [];
+    let commanderZone: CardType[] = [];
+
+    if (session.sessionType === "commander") {
       if (commanders.length > 0) {
         let cardsRemoved = 0;
-        
+
         // Przechodzimy przez KAŻDEGO dowódcę
         commanders.forEach((commander) => {
           const commanderIndex = libraryForShuffle.findIndex(
@@ -254,9 +283,9 @@ if (session.sessionType === "commander") {
             cardsRemoved++;
           }
         });
-        
+
         commanderZone = [...commanders]; // Wszyscy dowódcy idą do strefy
-        
+
         console.log(
           `[JOIN] Tryb Commander. Wybrano ${commanders.length} Dowódców. Usunięto z talii do tasowania: ${cardsRemoved}. Karty w bibliotece do tasowania: ${libraryForShuffle.length}`
         );
@@ -273,11 +302,13 @@ if (session.sessionType === "commander") {
       commanders = []; // Upewnij się, że commanders jest puste w trybie Standard
       commanderZone = [];
     }
-      // ----------------------------------------------------
-    
-const player: Player = {
+    // ----------------------------------------------------
+
+    // 🟡 SCENARIUSZ: NOWY GRACZ
+    const player: Player = {
       id: socket.id,
       name: playerName,
+      isOnline: true,
       life,
       initialDeck: [...deck], // ZAWSZE PEŁNA TALIA
       initialSideboard: [...sideboardCards],
@@ -300,18 +331,21 @@ const player: Player = {
         "Commander 2": 0,
         "Commander 3": 0,
       },
-
-    }; 
-    
-
+    };
     session.players.push(player);
-    socket.join(code); 
+    
+    // ✅ Dołącz do pokoju Socket.IO tylko jeśli nie jesteś już w nim
+    if (!socket.rooms.has(code)) {
+        socket.join(code);
+    } else {
+        console.warn(`[JOIN-WARN] Socket ${socket.id} już jest w pokoju ${code}.`);
+    }
 
     if (session.players.length === 1) {
       session.activePlayer = player.id;
       session.turn = 1;
     }
-    
+
     // WYSŁANIE ZAKTUALIZOWANEGO STANU
     io.to(code).emit("updateState", session);
     console.log(
@@ -322,7 +356,7 @@ const player: Player = {
     emitSessionStats();
   }
 );
- 
+ /////////////////////////////////////////////////////////////////////////////////////
  
  // --- Akcje gry ---
 socket.on(
@@ -745,32 +779,102 @@ socket.on(
 
   //--------------------------------------------------------------------------------
 
-  socket.on("disconnect", () => {
-    console.log("Użytkownik rozłączył się:", socket.id);
+socket.on("disconnect", () => {
+    console.log("Użytkownik rozłączył się przez błąd servera:", socket.id);
     
     for (const code in sessions) {
       const session = sessions[code];
-      const idx = session.players.findIndex((p) => p.id === socket.id);
-      if (idx >= 0) {
-        session.players.splice(idx, 1); // Ustaw aktywnego gracza na 1. w kolejce, jeśli się rozłączył
-        if (session.activePlayer === socket.id && session.players.length > 0) {
-          session.activePlayer = session.players[0].id;
-        } // Jeśli sesja jest pusta, zachowaj ją, ale zresetuj stan tury
-        if (session.players.length === 0) {
-          session.turn = 0;
-          session.activePlayer = "";
-        }
+      
+      // 1. Znajdź gracza na podstawie jego aktualnego Socket ID
+      const playerToDisconnect = session.players.find((p) => p.id === socket.id);
+      
+      if (playerToDisconnect) {
+        // 2. ✅ ZAMIAST USUWANA GRACZA, ZAZNACZ GO JAKO OFFLINE
+        playerToDisconnect.isOnline = false;
 
-        io.to(code).emit("updateState", session);
         console.log(
-          `Gracz rozłączony. Pozostało graczy w sesji ${code}: ${session.players.length}`
+          `Gracz ${playerToDisconnect.name} rozłączony. Zaznaczono jako offline.`
         );
 
-        // WYSYŁAMY ZAKTUALIZOWANE STATYSTYKI PO ROZŁĄCZENIU
+        // 3. Sprawdź, czy tura nie była u tego gracza i zresetuj aktywnego, jeśli wszyscy offline
+        if (session.activePlayer === playerToDisconnect.id && session.players.every(p => !p.isOnline)) {
+             session.activePlayer = "";
+             session.turn = 0;
+        }
+
+        // 4. Wysłanie stanu
+        io.to(code).emit("updateState", session);
         emitSessionStats();
       }
     }
   });
+
+socket.on(
+  "disconnectPlayer",
+  ({ code, playerId }: { code: string; playerId: string }) => {
+    // ⚠️ Klient musi wysłać code i playerId, aby serwer wiedział, którą sesję i gracza usunąć.
+
+    // Upewniamy się, że to ten sam Socket.ID próbuje się rozłączyć
+    if (playerId !== socket.id) {
+      console.warn(
+        `[DISCONNECT-WARN] Próba rozłączenia gracza ${playerId} przez inny socket ID: ${socket.id}`
+      );
+      socket.emit("error", "Nie możesz rozłączyć innego gracza.");
+      return;
+    }
+
+    const session = sessions[code];
+    if (!session) {
+      console.log(`[DISCONNECT-FAIL] Sesja ${code} nie istnieje.`);
+      // Nawet jeśli sesja nie istnieje, opuść pokój na wszelki wypadek
+      socket.leave(code); 
+      return;
+    }
+
+    const playerIndex = session.players.findIndex((p) => p.id === playerId);
+
+    if (playerIndex >= 0) {
+      const disconnectedPlayer = session.players[playerIndex];
+
+      // 1. Usuń gracza z sesji
+      session.players.splice(playerIndex, 1);
+
+      // 2. Przekaż turę, jeśli usuwany gracz był aktywny
+      if (session.activePlayer === playerId) {
+        if (session.players.length > 0) {
+          // Ustaw aktywnego gracza na 1. w kolejce
+          session.activePlayer = session.players[0].id;
+        } else {
+          // Jeśli sesja jest pusta, zresetuj stan tury
+          session.turn = 0;
+          session.activePlayer = "";
+        }
+      }
+
+      // 3. Sprawdź i usuń sesję, jeśli jest pusta
+      // if (session.players.length === 0) {
+      //   delete sessions[code];
+      //   console.log(`[DISCONNECT-SUCCESS] Sesja ${code} usunięta, ponieważ była pusta.`);
+      // } else {
+      //   // 4. Wysłanie zaktualizowanego stanu do pozostałych
+      //   io.to(code).emit("updateState", session);
+      //   console.log(
+      //     `[DISCONNECT-SUCCESS] Gracz ${disconnectedPlayer.name} usunięty. Pozostało w sesji ${code}: ${session.players.length}`
+      //   );
+      // }
+
+      // 5. WYSYŁAMY ZAKTUALIZOWANE STATYSTYKI
+      emitSessionStats();
+
+      // ✅ KLUCZOWY KROK: Rozłącz Socket z pokoju, aby umożliwić ponowne dołączenie
+      socket.leave(code);
+
+    } else {
+      console.log(`[DISCONNECT-FAIL] Gracz ${playerId} nie znaleziony w sesji ${code}.`);
+      socket.leave(code); // Zawsze opuszczaj pokój po próbie rozłączenia, jeśli znasz kod
+    }
+  }
+);
 
   socket.on("rotateCard", ({ code, playerId, cardId }) => {
     const session = sessions[code];
