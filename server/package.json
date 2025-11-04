@@ -2,26 +2,24 @@
   "name": "mtg-playtest-server",
   "version": "1.0.0",
   "type": "module",
-  "main": "index.ts",
+  "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-esm index.ts",
     "build": "tsc",
-    "start": "ts-node-esm index.ts" 
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "deep-object-diff": "^1.1.9",
     "express": "^4.21.2",
     "lodash.debounce": "^4.0.8",
-    "socket.io": "^4.8.1",
-    
-    "ts-node": "^10.9.2", 
-    "typescript": "^5.6.3"
+    "socket.io": "^4.8.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.23",
-    "@types/lodash.debounce": "^4.0.9"
-    
+    "@types/lodash.debounce": "^4.0.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3"
   }
 }
