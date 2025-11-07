@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "ts-node-esm index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "jest"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -18,7 +19,10 @@
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.23",
+    "@types/jest": "^30.0.0",
     "@types/lodash.debounce": "^4.0.9",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.6.3"
   }
