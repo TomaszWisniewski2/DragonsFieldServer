@@ -106,6 +106,13 @@ const io = new Server(server, {
 
 // ==== Stałe sesje ====
 const sessions: Record<string, Session> = {};
+//  Obiekt do przechowywania timerów ponownego połączenia
+const reconnectionTimers: Record<string, NodeJS.Timeout> = {};
+
+//  Funkcja pomocnicza do tworzenia unikalnego klucza
+function getTimerKey(code: string, playerName: string): string {
+  return `${code}::${playerName}`;
+}
 const initialSessions: { code: string; sessionType: SessionType }[] = [
   { code: "STND1", sessionType: "standard" },
   { code: "STND2", sessionType: "standard" },
@@ -224,12 +231,20 @@ socket.on(
     if (existingPlayer) {
       // 🟢 SCENARIUSZ: PONOWNE POŁĄCZENIE (RECONNECTION)
       console.log(`[RECONNECT] Gracz ${playerName} ponownie dołącza do sesji ${code}.`);
-
+      // ====================================================================
+    const timerKey = getTimerKey(code, playerName);
+    if (reconnectionTimers[timerKey]) {
+      clearTimeout(reconnectionTimers[timerKey]);
+      delete reconnectionTimers[timerKey];
+      console.log(`[TIMER] Anulowano timer usunięcia dla ${playerName}. Witamy z powrotem!`);
+    }
+    // ====================================================================
       // 1. Zaktualizuj Socket ID gracza na nowy (jest to kluczowe)
       existingPlayer.id = socket.id;
       // Zakładamy, że isOnline jest już zaimplementowane w Player
       // existingPlayer.isOnline = true; 
-
+      // Upewnij się, że ta linia istnieje i jest odkomentowana!
+      existingPlayer.isOnline = true;
       // 2. Dołącz nowy socket do pokoju, tylko jeśli nie jest już w nim
       if (!socket.rooms.has(code)) {
         socket.join(code);
@@ -780,34 +795,101 @@ socket.on(
   //--------------------------------------------------------------------------------
 
 socket.on("disconnect", () => {
-    console.log("Użytkownik rozłączył się przez błąd servera:", socket.id);
+  console.log("Użytkownik rozłączył się:", socket.id);
+  const TEN_MINUTES_MS = 10 * 60 * 1000; // 10 minut
+
+  for (const code in sessions) {
+    const session = sessions[code];
     
-    for (const code in sessions) {
-      const session = sessions[code];
-      
-      // 1. Znajdź gracza na podstawie jego aktualnego Socket ID
-      const playerToDisconnect = session.players.find((p) => p.id === socket.id);
-      
-      if (playerToDisconnect) {
-        // 2. ✅ ZAMIAST USUWANA GRACZA, ZAZNACZ GO JAKO OFFLINE
-        playerToDisconnect.isOnline = false;
+    // 1. Znajdź gracza na podstawie jego Socket ID
+    const playerToDisconnect = session.players.find((p) => p.id === socket.id);
+    
+    if (playerToDisconnect) {
+      const playerName = playerToDisconnect.name;
 
-        console.log(
-          `Gracz ${playerToDisconnect.name} rozłączony. Zaznaczono jako offline.`
-        );
+      // 2. ✅ Zaznacz gracza jako offline (tak jak w Twoim kodzie)
+      playerToDisconnect.isOnline = false;
+      console.log(
+        `[DISCONNECT] Gracz ${playerName} rozłączony. Zaznaczono jako offline.`
+      );
 
-        // 3. Sprawdź, czy tura nie była u tego gracza i zresetuj aktywnego, jeśli wszyscy offline
-        if (session.activePlayer === playerToDisconnect.id && session.players.every(p => !p.isOnline)) {
-             session.activePlayer = "";
-             session.turn = 0;
+      // 3. Sprawdź, czy tura nie była u tego gracza (tak jak w Twoim kodzie)
+      if (session.activePlayer === playerToDisconnect.id && session.players.every(p => !p.isOnline)) {
+           session.activePlayer = "";
+           session.turn = 0;
+      }
+
+      // 4. Wysłanie stanu "offline" do reszty graczy
+      io.to(code).emit("updateState", session);
+      emitSessionStats();
+
+      // 5. 💡 NOWA LOGIKA: Uruchomienie timera usunięcia
+      const timerKey = getTimerKey(code, playerName);
+      
+      // Wyczyść stary timer, jeśli jakimś cudem istnieje
+      if (reconnectionTimers[timerKey]) {
+        clearTimeout(reconnectionTimers[timerKey]);
+      }
+
+      console.log(`[TIMER] Uruchomiono ${TEN_MINUTES_MS / 60000}-minutowy timer usunięcia dla ${playerName} w sesji ${code}.`);
+
+      reconnectionTimers[timerKey] = setTimeout(() => {
+        console.log(`[TIMER] Czas na powrót dla ${playerName} w sesji ${code} minął.`);
+        
+        // Musimy ponownie pobrać sesję, aby mieć pewność, że stan jest aktualny
+        const currentSession = sessions[code];
+        if (!currentSession) {
+          console.log(`[TIMER] Sesja ${code} już nie istnieje. Anulowanie usunięcia.`);
+          delete reconnectionTimers[timerKey];
+          return;
         }
 
-        // 4. Wysłanie stanu
-        io.to(code).emit("updateState", session);
+        // Znajdź gracza po NAZWIE, ponieważ jego `id` (stary socket.id) jest już nieaktualne
+        const playerIndex = currentSession.players.findIndex((p) => p.name === playerName);
+
+        if (playerIndex === -1) {
+          console.log(`[TIMER] Gracz ${playerName} nie znaleziony (już usunięty?). Anulowanie.`);
+          delete reconnectionTimers[timerKey];
+          return;
+        }
+
+        const player = currentSession.players[playerIndex];
+
+        // Sprawdzenie "race condition" - jeśli gracz jest online, nie usuwamy
+        if (player.isOnline) {
+          console.log(`[TIMER] Gracz ${playerName} jest online. Nie usunięto.`);
+          delete reconnectionTimers[timerKey];
+          return;
+        }
+
+        // --- Logika "twardego" usunięcia (inspirowana Twoim `disconnectPlayer`) ---
+        console.log(`[REMOVE] Usuwanie gracza ${playerName} z sesji ${code} z powodu braku aktywności.`);
+        currentSession.players.splice(playerIndex, 1);
+
+        // Przekaż turę, jeśli usuwany gracz był aktywny
+        if (currentSession.activePlayer === player.id) { // Używamy starego ID gracza
+          if (currentSession.players.length > 0) {
+            currentSession.activePlayer = currentSession.players[0].id;
+          } else {
+            currentSession.turn = 0;
+            currentSession.activePlayer = "";
+          }
+        }
+        
+        // Wyczyść timer
+        delete reconnectionTimers[timerKey];
+
+        // Wyślij finalny stan i statystyki
+        io.to(code).emit("updateState", currentSession);
         emitSessionStats();
-      }
+
+      }, TEN_MINUTES_MS); 
+
+      // Znaleźliśmy gracza, możemy przerwać pętlę
+      break;
     }
-  });
+  }
+});
 
 socket.on(
   "disconnectPlayer",
@@ -867,6 +949,7 @@ socket.on(
       emitSessionStats();
 
       // ✅ KLUCZOWY KROK: Rozłącz Socket z pokoju, aby umożliwić ponowne dołączenie
+      io.to(code).emit("updateState", session);
       socket.leave(code);
 
     } else {
@@ -1173,7 +1256,7 @@ socket.on(
         card.secondFaceBaseToughness = tempBaseToughness;
         card.secondFaceLoyalty = tempLoyalty;
         // Zmień status odwrócenia
-        cardOnField.isFlipped = false;
+        cardOnField.isFlipped = !cardOnField.isFlipped;
         io.to(code).emit("updateState", session);
         console.log(
           `Odwrócono kartę ${
@@ -1444,7 +1527,39 @@ socket.on(
       io.to(code).emit("updateState", session);
     }
   );
+  socket.on("forceResetSession", ({ code }: { code: string }) => {
+    try {
+      const session = sessions[code];
+      if (!session) {
+        console.warn(`[RESET-FAIL] Próba resetu nieistniejącej sesji: ${code}`);
+        socket.emit("error", "Sesja, którą próbujesz zresetować, nie istnieje.");
+        return;
+      }
 
+      console.log(`[FORCE RESET] Rozpoczynanie twardego resetu dla sesji ${code}.`);
+
+      // 1. Wyślij specjalny event do WSZYSTKICH w pokoju,
+      //    aby kazać ich klientom wrócić do ekranu logowania.
+      io.to(code).emit(
+        "forceDisconnect", 
+        `Sesja "${session.code}" została przymusowo zresetowana przez administratora.`
+      );
+      
+      // 2. Wyczyść listę graczy i zresetuj stan na serwerze
+      session.players = [];
+      session.turn = 0;
+      session.activePlayer = "";
+      
+      console.log(`[FORCE RESET] Sesja ${code} została wyczyszczona.`);
+
+      // 3. Zaktualizuj statystyki dla ekranu logowania (teraz pokaże 0)
+      emitSessionStats();
+
+    } catch (error) {
+      console.error(`[FATAL-RESET] Błąd podczas forceResetSession dla ${code}:`, error);
+      socket.emit("error", "Wystąpił błąd serwera podczas resetowania sesji.");
+    }
+  });
   // 🌟 NOWY HANDLER: Move Card to Battlefield Flipped
   socket.on(
     "moveCardToBattlefieldFlipped",
