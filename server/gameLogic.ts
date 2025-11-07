@@ -61,20 +61,32 @@ export interface Session {
   activePlayer: string;
   sessionType: SessionType; // Nowy atrybut
 }
-// Helper do porównywania kosztów many
-// Ta funkcja jest kluczowa dla właściwego sortowania kosztów many w MTG
+// Helper for comparing mana costs
+// This function is key for correctly sorting MTG mana costs
 const parseManaCost = (cost: string | undefined): number => {
-    if (!cost) return 999; // Karty bez kosztu many (np. Lands) na koniec
-    let total = 0;
-    // Usuń symbole kolorów i specjalne (jak {T}, {Q}, {X})
-    const numericCost = cost.replace(/[^0-9]/g, '');
+    if (!cost) return 999; // Lands and other cards without a mana cost are sorted to the end.
     
-    // Sumowanie numerycznych kosztów
-    if (numericCost) {
-        total = parseInt(numericCost);
+    let totalManaValue = 0;
+    const symbols = cost.match(/{.*?}/g);
+
+    if (!symbols) {
+        return 0; // Or handle as an error/special case
     }
-    // Dalsza logika parsowania bardziej złożonych kosztów może być potrzebna
-    return total;
+
+    for (const symbol of symbols) {
+        const value = symbol.replace(/[{}]/g, '');
+        const numericValue = parseInt(value, 10);
+
+        if (!isNaN(numericValue)) {
+            totalManaValue += numericValue;
+        } else {
+            // Each non-numeric symbol (like W, U, B, R, G, C) contributes 1 to the mana value.
+            // This also handles hybrid mana symbols correctly for CMC calculation.
+            totalManaValue += 1;
+        }
+    }
+
+    return totalManaValue;
 };
 
 export const sortPlayerHand = (player: Player, criteria: SortCriteria): Player => {
