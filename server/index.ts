@@ -14,10 +14,7 @@ export type Zone =
   | "sideboard";
 export type SessionType = "standard" | "commander";
 export type SortCriteria = "mana_cost" | "name" | "type_line";
-export interface Spectator {
-  id: string; // Socket.id
-  name: string;
-}
+
 export interface CardType {
   id: string;
   name: string;
@@ -94,7 +91,6 @@ export interface Player {
 export interface Session {
   code: string;
   players: Player[];
-  spectators: Spectator[];
   turn: number;
   activePlayer: string;
   sessionType: SessionType;
@@ -125,7 +121,7 @@ const initialSessions: { code: string; sessionType: SessionType }[] = [
 ];
 
 initialSessions.forEach(({ code, sessionType }) => {
-  sessions[code] = { code, players: [], spectators: [], turn: 0, activePlayer: "", sessionType };
+  sessions[code] = { code, players: [], turn: 0, activePlayer: "", sessionType };
   console.log(`Zainicjowano sesję: ${code} (${sessionType})`);
 });
 
@@ -376,41 +372,7 @@ socket.on(
   }
 );
  /////////////////////////////////////////////////////////////////////////////////////
- // 💡 NOWY HANDLER: Dołączanie jako widz
-  socket.on(
-    "joinAsSpectator",
-    ({ code, playerName }: { code: string; playerName: string }) => {
-      const session = sessions[code];
-      if (!session) {
-        socket.emit("error", "Sesja o podanym kodzie nie istnieje.");
-        return;
-      }
-
-      // Sprawdź kolizję nazw (zarówno z graczami, jak i innymi widzami)
-      const nameTaken =
-        session.players.some((p) => p.name === playerName) ||
-        session.spectators.some((s) => s.name === playerName);
-
-      // if (nameTaken) {
-      //   socket.emit("error", "Gracz lub widz o tej nazwie już istnieje w sesji.");
-      //   return;
-      // }
-
-      const spectator: Spectator = { id: socket.id, name: playerName };
-      session.spectators.push(spectator);
-
-      // Widz dołącza do pokoju, aby otrzymywać 'updateState'
-      socket.join(code);
-
-      console.log(
-        `[SPECTATOR-JOIN] Widz ${playerName} (${socket.id}) dołączył do sesji ${code}.`
-      );
-
-      // Wyślij zaktualizowany stan do wszystkich (graczy i widzów)
-      io.to(code).emit("updateState", session);
-      // Nie aktualizujemy 'emitSessionStats()', ponieważ widzowie nie liczą się do limitu graczy
-    }
-  );
+ 
  // --- Akcje gry ---
 socket.on(
     "startGame",
@@ -835,7 +797,7 @@ socket.on(
 socket.on("disconnect", () => {
   console.log("Użytkownik rozłączył się:", socket.id);
   const TEN_MINUTES_MS = 10 * 60 * 1000; // 10 minut
-  let playerFound = false;
+
   for (const code in sessions) {
     const session = sessions[code];
     
@@ -844,7 +806,7 @@ socket.on("disconnect", () => {
     
     if (playerToDisconnect) {
       const playerName = playerToDisconnect.name;
-      playerFound = true;
+
       // 2. ✅ Zaznacz gracza jako offline (tak jak w Twoim kodzie)
       playerToDisconnect.isOnline = false;
       console.log(
@@ -927,22 +889,7 @@ socket.on("disconnect", () => {
       break;
     }
   }
-// 💡 NOWA PĘTLA: Jeśli rozłączony użytkownik nie był graczem, sprawdź czy był widzem
-    if (!playerFound) {
-      for (const code in sessions) {
-        const session = sessions[code];
-        const spectatorIndex = session.spectators.findIndex(s => s.id === socket.id);
-        
-        if (spectatorIndex > -1) {
-          const [removedSpectator] = session.spectators.splice(spectatorIndex, 1);
-          console.log(`[SPECTATOR-DC] Widz ${removedSpectator.name} rozłączony i usunięty z ${code}.`);
-          // Natychmiast powiadom resztę
-          io.to(code).emit("updateState", session);
-          break;
-        }
-      }
-    }
-  });
+});
 
 socket.on(
   "disconnectPlayer",
@@ -1600,7 +1547,6 @@ socket.on(
       
       // 2. Wyczyść listę graczy i zresetuj stan na serwerze
       session.players = [];
-      session.spectators = [];
       session.turn = 0;
       session.activePlayer = "";
       
@@ -1614,7 +1560,6 @@ socket.on(
       socket.emit("error", "Wystąpił błąd serwera podczas resetowania sesji.");
     }
   });
-
   // 🌟 NOWY HANDLER: Move Card to Battlefield Flipped
   socket.on(
     "moveCardToBattlefieldFlipped",
